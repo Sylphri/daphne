@@ -3,7 +3,12 @@ use std::io::Write;
 
 #[derive(Debug)]
 enum OpType {
-    Plus,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    UnaryPlus,
+    UnaryMinus,
 }
 
 #[derive(Debug)]
@@ -14,36 +19,63 @@ enum Token {
 
 #[derive(Debug)]
 enum ParseError {
-    UnknownSym(char),
+    UnknownToken(String),
 }
 
-// TODO: first split by whitespaces then by operators
+fn is_operation(token: &Token) -> bool {
+    match *token {
+        Token::Operation(_) => true,
+        _ => false,
+    }
+}
+
+fn is_numeric(byte: u8) -> bool {
+    (b'0'..=b'9').contains(&byte) || byte == b'.'
+}
+
+fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
+    tokens.len() > 0 && pos+1 < word.len()
+    && is_operation(&tokens[tokens.len()-1])
+    && is_numeric(word.as_bytes()[pos+1])
+}
+
 fn parse(input: &str) -> Result<Vec<Token>, ParseError> {
     let mut tokens = vec![];
-    let mut last = String::new();
-    for ch in input.chars() {
-        match ch {
-            '+' => {
-                if last.len() > 0 {
-                    tokens.push(Token::Number(
-                        last.parse().expect("Unreachable")
-                    ));
-                    last.clear();
-                }
-                tokens.push(Token::Operation(OpType::Plus));
-            },
-            ' ' | '\n' => {
-                if last.len() > 0 {
-                    tokens.push(Token::Number(
-                        last.parse().expect("Unreachable")
-                    ));
-                    last.clear();
-                }
-            },
-            '0'..='9' | '.' => {
-                last.push(ch);
-            },
-            _ => return Err(ParseError::UnknownSym(ch)),
+    let operators = &['+', '-', '*', '/'];
+    for mut word in input.split_ascii_whitespace() {
+        while let Some(i) = word.find(operators) {
+            if i != 0 {
+                match word[0..i].parse() {
+                    Ok(num) => tokens.push(Token::Number(num)),
+                    Err(_) => return Err(ParseError::UnknownToken(word[0..i].to_string())),
+                };
+            }
+            match word.as_bytes()[i] {
+                b'+' => {
+                    if is_unary(i, &tokens, &word) {
+                        tokens.push(Token::Operation(OpType::UnaryPlus));
+                    } else {
+                        tokens.push(Token::Operation(OpType::Add));
+                    }
+                },
+                b'-' => {
+                    if is_unary(i, &tokens, &word) {
+                        tokens.push(Token::Operation(OpType::UnaryMinus));
+                    } else {
+                        tokens.push(Token::Operation(OpType::Sub))
+                    }
+                },
+                b'*' => { tokens.push(Token::Operation(OpType::Mul)) },
+                b'/' => { tokens.push(Token::Operation(OpType::Div)) },
+                _ => unreachable!(),
+            };
+            word = &word[i+1..];
+        }
+        if word.len() > 0 {
+            match word.parse() {
+                Ok(num) => tokens.push(Token::Number(num)),
+                Err(_) => return Err(ParseError::UnknownToken(word.to_string())),
+            };
         }
     }
     Ok(tokens)
