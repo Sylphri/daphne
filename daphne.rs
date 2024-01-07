@@ -225,7 +225,6 @@ fn apply_op(numbers: &mut Vec<f64>, op: OpType) {
     }
 }
 
-// TODO: fix this
 fn evaluate(tokens: &Vec<Token>) -> f64 {
     let mut numbers = vec![];
     let mut operations = vec![];
@@ -237,7 +236,7 @@ fn evaluate(tokens: &Vec<Token>) -> f64 {
                     operations.push(op.clone());
                 } else {
                     while let Some(last) = operations.pop() {
-                        if op_priority(&last) <= op_priority(&op) {
+                        if op_priority(&last) < op_priority(&op) {
                             operations.push(last);
                             break
                         }
@@ -247,22 +246,9 @@ fn evaluate(tokens: &Vec<Token>) -> f64 {
                 }
             }
         }
-        println!("{:?}", numbers);
-        println!("{:?}", operations);
     }
-    operations.reverse();
-    numbers.reverse();
-    let mut i = 0;
-    while i+1 < numbers.len() {
-        numbers.swap(i, i+1);
-        i += 2;
-    }
-    println!("{:?}", numbers);
-    println!("{:?}", operations);
     while let Some(last) = operations.pop() {
         apply_op(&mut numbers, last);
-        println!("{:?}", numbers);
-        println!("{:?}", operations);
     }
     assert!(numbers.len() == 1);
     return numbers.pop().unwrap();
