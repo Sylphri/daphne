@@ -11,20 +11,26 @@ enum OpType {
     UnaryMinus,
 }
 
-#[derive(Debug)]
-enum Token {
+#[derive(Debug, Clone)]
+enum TokenType {
     Number(f64),
     Operation(OpType),
 }
 
+#[derive(Debug, Clone)]
+struct Token {
+    ttype: TokenType,
+    pos: usize,
+}
+
 #[derive(Debug)]
-enum ParseError {
+enum ParseErr {
     UnknownToken(String),
 }
 
 fn is_operation(token: &Token) -> bool {
-    match *token {
-        Token::Operation(_) => true,
+    match token.ttype {
+        TokenType::Operation(_) => true,
         _ => false,
     }
 }
@@ -38,44 +44,90 @@ fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
     && pos+1 < word.len() && is_numeric(word.as_bytes()[pos+1])
 }
 
-fn parse(input: &str) -> Result<Vec<Token>, ParseError> {
-    let mut tokens = vec![];
+fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
     let operators = &['+', '-', '*', '/'];
-    for mut word in input.split_ascii_whitespace() {
+    let mut tokens = vec![];
+    let mut begin = 0;
+    while begin < input.len() && input.as_bytes()[begin].is_ascii_whitespace() {
+        begin += 1;
+    }
+    let mut input = &input[begin..];
+    while let Some(i) = input.find(|c: char| c.is_ascii_whitespace()) {
+        let mut word = &input[0..i];
+        input = &input[word.len()..];
         while let Some(i) = word.find(operators) {
             if i != 0 {
                 match word[0..i].parse() {
-                    Ok(num) => tokens.push(Token::Number(num)),
-                    Err(_) => return Err(ParseError::UnknownToken(word[0..i].to_string())),
+                    Ok(num) => tokens.push(Token {
+                            ttype: TokenType::Number(num),
+                            pos: begin,
+                        }),
+                    Err(_) => return Err(ParseErr::UnknownToken(word[0..i].to_string())),
                 };
             }
             match word.as_bytes()[i] {
                 b'+' => {
                     if is_unary(i, &tokens, &word) {
-                        tokens.push(Token::Operation(OpType::UnaryPlus));
+                        tokens.push(Token {
+                            ttype: TokenType::Operation(OpType::UnaryPlus),
+                            pos: begin+i,
+                        });
                     } else {
-                        tokens.push(Token::Operation(OpType::Add));
+                        tokens.push(Token {
+                            ttype: TokenType::Operation(OpType::Add),
+                            pos: begin+i,
+                        });
                     }
                 },
                 b'-' => {
                     if is_unary(i, &tokens, &word) {
-                        tokens.push(Token::Operation(OpType::UnaryMinus));
+                        tokens.push(Token {
+                            ttype: TokenType::Operation(OpType::UnaryMinus),
+                            pos: begin+i,
+                        });
                     } else {
-                        tokens.push(Token::Operation(OpType::Sub))
+                        tokens.push(Token {
+                            ttype: TokenType::Operation(OpType::Sub),
+                            pos: begin+i,
+                        });
                     }
                 },
-                b'*' => { tokens.push(Token::Operation(OpType::Mul)) },
-                b'/' => { tokens.push(Token::Operation(OpType::Div)) },
+                b'*' => {
+                    tokens.push(Token {
+                        ttype: TokenType::Operation(OpType::Mul),
+                        pos: begin+i,
+                    });
+                },
+                b'/' => {
+                    tokens.push(Token {
+                        ttype: TokenType::Operation(OpType::Div),
+                        pos: begin+i,
+                    });
+                },
                 _ => unreachable!(),
             };
             word = &word[i+1..];
+            begin += i+1;
         }
         if word.len() > 0 {
             match word.parse() {
-                Ok(num) => tokens.push(Token::Number(num)),
-                Err(_) => return Err(ParseError::UnknownToken(word.to_string())),
+                Ok(num) => tokens.push(Token {
+                    ttype: TokenType::Number(num),
+                    pos: begin,
+                }),
+                Err(_) => return Err(ParseErr::UnknownToken(word.to_string())),
             };
+            begin += word.len();
         }
+        let mut offset = 0;
+        while offset < input.len() && input.as_bytes()[offset].is_ascii_whitespace() {
+            offset += 1;
+        }
+        if offset == 0 {
+            break;
+        }
+        input = &input[offset..];
+        begin += offset;
     }
     Ok(tokens)
 }
@@ -83,48 +135,48 @@ fn parse(input: &str) -> Result<Vec<Token>, ParseError> {
 #[derive(Debug)]
 enum SyntaxErr {
     None,
-    MissingArg(usize),
+    MissingArg(Token),
 }
 
 fn binary_op_check(pos: usize, tokens: &Vec<Token>) -> SyntaxErr {
     if pos == 0 || pos == tokens.len()-1 
         || is_operation(&tokens[pos-1]) {
-        return SyntaxErr::MissingArg(pos);
+        return SyntaxErr::MissingArg(tokens[pos].clone());
     } else {
-        match tokens[pos+1] {
-            Token::Operation(OpType::UnaryPlus) => {},
-            Token::Operation(OpType::UnaryMinus) => {},
-            Token::Number(_) => {},
-            _ => return SyntaxErr::MissingArg(pos),
+        match tokens[pos+1].ttype {
+            TokenType::Operation(OpType::UnaryPlus) => {},
+            TokenType::Operation(OpType::UnaryMinus) => {},
+            TokenType::Number(_) => {},
+            _ => return SyntaxErr::MissingArg(tokens[pos].clone()),
         }
     }
     SyntaxErr::None
 }
 
 fn syntax_check(tokens: &Vec<Token>) -> SyntaxErr {
-    for (i, token) in tokens.iter().enumerate() {
-        match token {
-            Token::Operation(OpType::Add) |
-            Token::Operation(OpType::Sub) |
-            Token::Operation(OpType::Mul) |
-            Token::Operation(OpType::Div) => {
+    for (i, Token {ttype, ..}) in tokens.iter().enumerate() {
+        match ttype {
+            TokenType::Operation(OpType::Add) |
+            TokenType::Operation(OpType::Sub) |
+            TokenType::Operation(OpType::Mul) |
+            TokenType::Operation(OpType::Div) => {
                 match binary_op_check(i, tokens) {
                     SyntaxErr::MissingArg(pos) => return SyntaxErr::MissingArg(pos),
                     SyntaxErr::None => {},
                 };
             },
-            Token::Operation(OpType::UnaryPlus) |
-            Token::Operation(OpType::UnaryMinus) => {
+            TokenType::Operation(OpType::UnaryPlus) |
+            TokenType::Operation(OpType::UnaryMinus) => {
                 if i == tokens.len()-1 {
                     unreachable!("Probably error in parse()");
                 } else {
-                    match tokens[i+1] {
-                        Token::Number(_) => {},
+                    match tokens[i+1].ttype {
+                        TokenType::Number(_) => {},
                         _ => unreachable!("Probably error in parse()"),
                     }
                 }
             },
-            Token::Number(_) => {},
+            TokenType::Number(_) => {},
         }
     }
     SyntaxErr::None
@@ -173,13 +225,14 @@ fn apply_op(numbers: &mut Vec<f64>, op: OpType) {
     }
 }
 
+// TODO: fix this
 fn evaluate(tokens: &Vec<Token>) -> f64 {
     let mut numbers = vec![];
     let mut operations = vec![];
     for token in tokens {
-        match token {
-            Token::Number(num) => numbers.push(*num),
-            Token::Operation(op) => {
+        match &token.ttype {
+            TokenType::Number(num) => numbers.push(*num),
+            TokenType::Operation(op) => {
                 if let None = operations.last() {
                     operations.push(op.clone());
                 } else {
@@ -194,9 +247,22 @@ fn evaluate(tokens: &Vec<Token>) -> f64 {
                 }
             }
         }
+        println!("{:?}", numbers);
+        println!("{:?}", operations);
     }
+    operations.reverse();
+    numbers.reverse();
+    let mut i = 0;
+    while i+1 < numbers.len() {
+        numbers.swap(i, i+1);
+        i += 2;
+    }
+    println!("{:?}", numbers);
+    println!("{:?}", operations);
     while let Some(last) = operations.pop() {
         apply_op(&mut numbers, last);
+        println!("{:?}", numbers);
+        println!("{:?}", operations);
     }
     assert!(numbers.len() == 1);
     return numbers.pop().unwrap();
@@ -218,20 +284,35 @@ fn main() {
                     println!("    {:?},", token);
                 }
                 println!("]");
+                println!("[Info]: {} tokens in total", tokens.len());
                 tokens
             },
             Err(err)   => {
-                println!("[Error]: {:?}", err);
+                match err {
+                    // TODO: Properly handle long expressions
+                    ParseErr::UnknownToken(token) => {
+                        println!("[Error]: Unknown character in token '{}'", token);
+                        print!(" ::  {}", input);
+                        let pos = input.find(&token).expect("Unknown token must be in input");
+                        let mut pt = vec![b'-'; input.len()-1];
+                        pt[pos] = b'^';
+                        println!(" ::  {}", String::from_utf8(pt).expect("Error in pointer string"));
+                    }
+                }
                 continue;
             },
         };
 
         match syntax_check(&tokens) {
             SyntaxErr::None => {},
-            err => {
-                println!("[Error]: {:?}", err);
+            SyntaxErr::MissingArg(token) => {
+                println!("[Error]: Missing argument for '{:?}'", token.ttype);
+                print!(" ::  {}", input);
+                let mut pt = vec![b'-'; input.len()-1];
+                pt[token.pos] = b'^';
+                println!(" ::  {}", String::from_utf8(pt).expect("Error in pointer string"));
                 continue;
-            }
+            },
         }
 
         let answer = evaluate(&tokens);
