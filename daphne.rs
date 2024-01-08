@@ -1,6 +1,10 @@
 use std::io;
 use std::io::Write;
 
+mod external;
+
+use external::{TermSize, get_terminal_size};
+
 #[derive(Debug, Clone)]
 enum OpType {
     Add,
@@ -44,14 +48,18 @@ fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
     && pos+1 < word.len() && is_numeric(word.as_bytes()[pos+1])
 }
 
+fn trim_start(line: &str) -> (&str, usize) {
+    let mut begin = 0;
+    while begin < line.len() && line.as_bytes()[begin].is_ascii_whitespace() {
+        begin += 1;
+    }
+    (&line[begin..], begin)
+}
+
 fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
     let operators = &['+', '-', '*', '/'];
     let mut tokens = vec![];
-    let mut begin = 0;
-    while begin < input.len() && input.as_bytes()[begin].is_ascii_whitespace() {
-        begin += 1;
-    }
-    let mut input = &input[begin..];
+    let (mut input, mut begin) = trim_start(input);
     while let Some(i) = input.find(|c: char| c.is_ascii_whitespace()) {
         let mut word = &input[0..i];
         input = &input[word.len()..];
@@ -65,47 +73,28 @@ fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
                     Err(_) => return Err(ParseErr::UnknownToken(word[0..i].to_string())),
                 };
             }
-            match word.as_bytes()[i] {
-                b'+' => {
-                    if is_unary(i, &tokens, &word) {
-                        tokens.push(Token {
-                            ttype: TokenType::Operation(OpType::UnaryPlus),
-                            pos: begin+i,
-                        });
-                    } else {
-                        tokens.push(Token {
-                            ttype: TokenType::Operation(OpType::Add),
-                            pos: begin+i,
-                        });
-                    }
+            tokens.push(Token {
+                ttype: match word.as_bytes()[i] {
+                    b'+' => {
+                        if is_unary(i, &tokens, &word) {
+                            TokenType::Operation(OpType::UnaryPlus)
+                        } else {
+                            TokenType::Operation(OpType::Add)
+                        }
+                    },
+                    b'-' => {
+                        if is_unary(i, &tokens, &word) {
+                            TokenType::Operation(OpType::UnaryMinus)
+                        } else {
+                            TokenType::Operation(OpType::Sub)
+                        }
+                    },
+                    b'*' => TokenType::Operation(OpType::Mul),
+                    b'/' => TokenType::Operation(OpType::Div),
+                    _ => unreachable!(),
                 },
-                b'-' => {
-                    if is_unary(i, &tokens, &word) {
-                        tokens.push(Token {
-                            ttype: TokenType::Operation(OpType::UnaryMinus),
-                            pos: begin+i,
-                        });
-                    } else {
-                        tokens.push(Token {
-                            ttype: TokenType::Operation(OpType::Sub),
-                            pos: begin+i,
-                        });
-                    }
-                },
-                b'*' => {
-                    tokens.push(Token {
-                        ttype: TokenType::Operation(OpType::Mul),
-                        pos: begin+i,
-                    });
-                },
-                b'/' => {
-                    tokens.push(Token {
-                        ttype: TokenType::Operation(OpType::Div),
-                        pos: begin+i,
-                    });
-                },
-                _ => unreachable!(),
-            };
+                pos: begin+i,
+            });
             word = &word[i+1..];
             begin += i+1;
         }
@@ -119,14 +108,8 @@ fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
             };
             begin += word.len();
         }
-        let mut offset = 0;
-        while offset < input.len() && input.as_bytes()[offset].is_ascii_whitespace() {
-            offset += 1;
-        }
-        if offset == 0 {
-            break;
-        }
-        input = &input[offset..];
+        let (trimmed, offset) = trim_start(input);
+        input = trimmed;
         begin += offset;
     }
     Ok(tokens)
@@ -136,21 +119,22 @@ fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
 enum SyntaxErr {
     None,
     MissingArg(Token),
+    MissingOp(Token, Token),
 }
 
-fn binary_op_check(pos: usize, tokens: &Vec<Token>) -> SyntaxErr {
+fn binary_op_check(pos: usize, tokens: &Vec<Token>) -> Result<(), Token> {
     if pos == 0 || pos == tokens.len()-1 
         || is_operation(&tokens[pos-1]) {
-        return SyntaxErr::MissingArg(tokens[pos].clone());
+        return Err(tokens[pos].clone());
     } else {
         match tokens[pos+1].ttype {
             TokenType::Operation(OpType::UnaryPlus) => {},
             TokenType::Operation(OpType::UnaryMinus) => {},
             TokenType::Number(_) => {},
-            _ => return SyntaxErr::MissingArg(tokens[pos].clone()),
+            _ => return Err(tokens[pos].clone()),
         }
     }
-    SyntaxErr::None
+    Ok(())
 }
 
 fn syntax_check(tokens: &Vec<Token>) -> SyntaxErr {
@@ -160,10 +144,9 @@ fn syntax_check(tokens: &Vec<Token>) -> SyntaxErr {
             TokenType::Operation(OpType::Sub) |
             TokenType::Operation(OpType::Mul) |
             TokenType::Operation(OpType::Div) => {
-                match binary_op_check(i, tokens) {
-                    SyntaxErr::MissingArg(pos) => return SyntaxErr::MissingArg(pos),
-                    SyntaxErr::None => {},
-                };
+                if let Err(token) = binary_op_check(i, tokens) {
+                    return SyntaxErr::MissingArg(token);
+                }
             },
             TokenType::Operation(OpType::UnaryPlus) |
             TokenType::Operation(OpType::UnaryMinus) => {
@@ -176,7 +159,11 @@ fn syntax_check(tokens: &Vec<Token>) -> SyntaxErr {
                     }
                 }
             },
-            TokenType::Number(_) => {},
+            TokenType::Number(_) => {
+                if i < tokens.len()-1 && !is_operation(&tokens[i+1]) {
+                    return SyntaxErr::MissingOp(tokens[i].clone(), tokens[i+1].clone());
+                }
+            },
         }
     }
     SyntaxErr::None
@@ -254,6 +241,46 @@ fn evaluate(tokens: &Vec<Token>) -> f64 {
     return numbers.pop().unwrap();
 }
 
+const DEFAULT_TERM_WIDTH: u16 = 50;
+const DEFAULT_TERM_HEIGHT: u16 = 50;
+
+fn print_err(input: &str, message: &str, pos: usize) {
+    let tsize = match get_terminal_size() {
+        Some(tsize) => tsize,
+        None => {
+            println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
+            TermSize {
+                width: DEFAULT_TERM_WIDTH,
+                height: DEFAULT_TERM_HEIGHT,
+            }
+        },
+    };
+    println!("[Error]: {message}");
+    if input.len() < tsize.width as usize - 6 {
+        print!(" ::  {input}");
+        let mut pt = vec![b'-'; input.len()-1];
+        pt[pos] = b'^';
+        println!(" ::  {}", String::from_utf8(pt).expect("Error in pointer string"));
+    } else {
+        let width = ((tsize.width-8)/2) as usize;
+        let begin = if width <= pos {
+            pos - width
+        } else {
+            0
+        };
+        let end = if width+pos < input.len() {
+            width+pos
+        } else {
+            input.len()-1
+        };
+        let input = &input[begin..end];
+        println!(" ::  ... {input} ...");
+        let mut pt = vec![b'-'; end-begin];
+        pt[pos - begin] = b'^';
+        println!(" ::      {}", String::from_utf8(pt).expect("Error in pointer string"));
+    }
+}
+
 fn main() {
     loop {
         print!("> ");
@@ -262,6 +289,11 @@ fn main() {
         io::stdin()
             .read_line(&mut input)
             .expect("Failed to read line");
+        match input.trim() {
+            "" => continue,
+            "exit" => break,
+            _ => {},
+        }
 
         let tokens = match parse(&input) {
             Ok(tokens) => {
@@ -275,14 +307,9 @@ fn main() {
             },
             Err(err)   => {
                 match err {
-                    // TODO: Properly handle long expressions
                     ParseErr::UnknownToken(token) => {
-                        println!("[Error]: Unknown character in token '{}'", token);
-                        print!(" ::  {}", input);
                         let pos = input.find(&token).expect("Unknown token must be in input");
-                        let mut pt = vec![b'-'; input.len()-1];
-                        pt[pos] = b'^';
-                        println!(" ::  {}", String::from_utf8(pt).expect("Error in pointer string"));
+                        print_err(&input, &format!("Unknown character in token '{}'", token), pos);
                     }
                 }
                 continue;
@@ -292,13 +319,13 @@ fn main() {
         match syntax_check(&tokens) {
             SyntaxErr::None => {},
             SyntaxErr::MissingArg(token) => {
-                println!("[Error]: Missing argument for '{:?}'", token.ttype);
-                print!(" ::  {}", input);
-                let mut pt = vec![b'-'; input.len()-1];
-                pt[token.pos] = b'^';
-                println!(" ::  {}", String::from_utf8(pt).expect("Error in pointer string"));
+                print_err(&input, &format!("Missing argument for '{:?}'", token.ttype), token.pos);
                 continue;
             },
+            SyntaxErr::MissingOp(a, b) => {
+                print_err(&input, &format!("Missing operation between '{:?}' and '{:?}'", a.ttype, b.ttype), b.pos-1);
+                continue;
+            }
         }
 
         let answer = evaluate(&tokens);
