@@ -1,9 +1,5 @@
-use std::io;
-use std::io::Write;
-
-mod external;
-
-use external::{TermSize, get_terminal_size};
+use terminal_size::terminal_size;
+use rustyline::DefaultEditor;
 
 #[derive(Debug, Clone, PartialEq)]
 enum OpType {
@@ -325,24 +321,22 @@ const DEFAULT_TERM_WIDTH: u16 = 50;
 const DEFAULT_TERM_HEIGHT: u16 = 50;
 
 fn print_err(input: &str, message: &str, pos: usize) {
-    let tsize = match get_terminal_size() {
+    let (terminal_size::Width(twidth), _) = match terminal_size() {
         Some(tsize) => tsize,
         None => {
             println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
-            TermSize {
-                width: DEFAULT_TERM_WIDTH,
-                height: DEFAULT_TERM_HEIGHT,
-            }
+            (terminal_size::Width(DEFAULT_TERM_WIDTH),
+             terminal_size::Height(DEFAULT_TERM_HEIGHT))
         },
     };
     println!("[Error]: {message}");
-    if input.len() < tsize.width as usize - 6 {
+    if input.len() < twidth as usize - 6 {
         print!(" ::  {input}");
         let mut pt = vec![b'-'; input.len()-1];
         pt[pos] = b'^';
         println!(" ::  {}", String::from_utf8(pt).expect("Error in pointer string"));
     } else {
-        let width = ((tsize.width-8)/2) as usize;
+        let width = ((twidth-8)/2) as usize;
         let begin = if width <= pos {
             pos - width
         } else {
@@ -361,19 +355,26 @@ fn print_err(input: &str, message: &str, pos: usize) {
     }
 }
 
-fn main() {
+fn main() -> rustyline::Result<()> {
+    let mut rl = DefaultEditor::new()?;
     loop {
-        print!("> ");
-        io::stdout().flush().unwrap();
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
+        let readline = rl.readline("> ");
+        let mut input = match readline {
+            Ok(line) => {
+                rl.add_history_entry(line.as_str());
+                line
+            },
+            Err(err) => {
+                println!("{err}");
+                break;
+            }
+        };
         match input.trim() {
             "" => continue,
             "exit" => break,
             _ => {},
         }
+        input.push('\n');
 
         let tokens = match parse(&input) {
             Ok(tokens) => {
@@ -423,4 +424,5 @@ fn main() {
         let answer = evaluate(&tokens);
         println!("=> {}", answer);
     }
+    Ok(())
 }
