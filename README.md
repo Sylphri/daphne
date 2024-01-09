@@ -1,5 +1,4 @@
 ## Quick Start
 ```console
-$ rustc daphne.rs
-$ ./daphne
+$ cargo run
 ```
