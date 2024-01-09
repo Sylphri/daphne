@@ -355,13 +355,29 @@ fn print_err(input: &str, message: &str, pos: usize) {
     }
 }
 
+fn usage() {
+    println!("Welcome to Daphne, a simple math shell.");
+    println!("Usage:");
+    println!("  > expr");
+    println!();
+    println!("Expr:");
+    println!("  Mathematical expression which consist of <op> and <num>");
+    println!("   <op>  - One of this basic operations: +, -, *, /, ^");
+    println!("   <num> - Arbitrary real number");
+    println!();
+}
+
 fn main() -> rustyline::Result<()> {
+    usage();
     let mut rl = DefaultEditor::new()?;
     loop {
         let readline = rl.readline("> ");
         let mut input = match readline {
             Ok(line) => {
-                rl.add_history_entry(line.as_str());
+                match rl.add_history_entry(line.as_str()) {
+                    Err(err) => println!("[Info]: Can't add entry to history '{err}"),
+                    Ok(_) => {},
+                }
                 line
             },
             Err(err) => {
@@ -372,6 +388,10 @@ fn main() -> rustyline::Result<()> {
         match input.trim() {
             "" => continue,
             "exit" => break,
+            "help" => {
+                usage();
+                continue;
+            },
             _ => {},
         }
         input.push('\n');
