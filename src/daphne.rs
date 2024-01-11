@@ -118,7 +118,7 @@ fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
         // operators
         '+', '-', '*', '/', '^',
         // symbols
-         ',', '=', '(', ')',
+        ',', '=', '(', ')',
     ];
     let mut tokens = vec![];
     let (mut input, mut begin) = trim_start(input);
