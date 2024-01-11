@@ -116,9 +116,9 @@ fn parse_word(word: &str) -> Option<TokenType> {
 fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
     let reserved_symbols = &[
         // operators
-        '+', '-', '*', '/', '^', '(', ')',
+        '+', '-', '*', '/', '^',
         // symbols
-         ',', '=',
+         ',', '=', '(', ')',
     ];
     let mut tokens = vec![];
     let (mut input, mut begin) = trim_start(input);
@@ -197,54 +197,69 @@ enum SyntaxErr {
     DefInsideOfExpr(Token),
 }
 
-fn def_check(tokens: &[Token]) -> Result<(), SyntaxErr> {
+fn create_function(tokens: &[Token]) -> Result<(String, Func), SyntaxErr> {
     assert!(tokens.len() > 0);
-    assert!(tokens[0].ttype == TokenType::Keyword(Keyword::Def));
-    let def = &tokens[0];
-    match tokens.get(1) {
-        Some(Token {ttype: TokenType::Ident(_), ..}) => {},
+    let mut pos = 0;
+    assert!(tokens[pos].ttype == TokenType::Keyword(Keyword::Def));
+    let def = &tokens[pos];
+    pos += 1;
+    let ident = match &tokens.get(pos) {
+        Some(Token {ttype: TokenType::Ident(ident), ..}) => ident,
         _ =>  return Err(SyntaxErr::MissingIdent(def.clone())),
-    }
-    match tokens.get(2) {
+    };
+    pos += 1;
+    match tokens.get(pos) {
         Some(Token {ttype: TokenType::Operation(Operation::LeftParen), ..}) => {},
-        _ =>  return Err(SyntaxErr::MissingLeftParen(tokens[1].clone())),
+        _ =>  return Err(SyntaxErr::MissingLeftParen(tokens[pos].clone())),
     }
-    let mut i = 3;
-    if i >= tokens.len() {
-        return Err(SyntaxErr::MissingIdent(tokens[i-1].clone()));
-    }
+    pos += 1;
+    let mut args = vec![];
     loop {
-        let token = match tokens.get(i) {
-            None => return Err(SyntaxErr::MissingRightParen(tokens[i-1].clone())),
+        let token = match tokens.get(pos) {
+            None => return Err(SyntaxErr::MissingRightParen(tokens[pos-1].clone())),
             Some(token) => token,
         };
         if token.ttype == TokenType::Operation(Operation::RightParen)
-            && tokens[i-1].ttype != TokenType::Symbol(Symbol::Comma) {
+            && tokens[pos-1].ttype != TokenType::Symbol(Symbol::Comma) {
             break;
         }
-        match token.ttype {
-            TokenType::Ident(_) => {},
-            _ => return Err(SyntaxErr::MissingIdent(tokens[i-1].clone())),
+        match &token.ttype {
+            TokenType::Ident(arg) => {
+                args.push(arg.clone());
+            },
+            _ => return Err(SyntaxErr::MissingIdent(tokens[pos-1].clone())),
         }
-        i += 1;
-        if i >= tokens.len() {
-            return Err(SyntaxErr::MissingComma(tokens[i-1].clone()));
+        pos += 1;
+        if pos >= tokens.len() {
+            return Err(SyntaxErr::MissingComma(tokens[pos-1].clone()));
         }
-        match tokens[i].ttype {
-            TokenType::Symbol(Symbol::Comma) => {i += 1},
+        match tokens[pos].ttype {
+            TokenType::Symbol(Symbol::Comma) => {pos += 1},
             TokenType::Operation(Operation::RightParen) => break,
-            _ => return Err(SyntaxErr::MissingComma(tokens[i-1].clone())),
+            _ => return Err(SyntaxErr::MissingComma(tokens[pos-1].clone())),
         }
     }
-    i += 1;
-    match tokens.get(i) {
+    pos += 1;
+    match tokens.get(pos) {
         Some(Token {ttype: TokenType::Symbol(Symbol::Assign), ..}) => {},
-        _ => return Err(SyntaxErr::MissingAssign(tokens[i-1].clone())),
+        _ => return Err(SyntaxErr::MissingAssign(tokens[pos-1].clone())),
     }
-    if i+1 >= tokens.len() {
-        return Err(SyntaxErr::MissingFuncBody(tokens[i].clone()));
+    pos += 1;
+    if pos >= tokens.len() {
+        return Err(SyntaxErr::MissingFuncBody(tokens[pos].clone()));
     }
-    expr_check(&tokens[i+1..])
+    if let Err(err) = expr_check(&tokens[pos..], &args) {
+        return Err(err);
+    }
+    let expr = match expr_check(&tokens[pos..], &args) {
+        Ok(instructions) => instructions,
+        Err(err) => return Err(err),
+    };
+    Ok((ident.clone(), Func {
+        ident: ident.clone(),
+        args: (*args).to_vec(),
+        expr: expr,
+    }))
 }
 
 fn binary_op_check(pos: usize, tokens: &[Token]) -> Result<(), Token> {
@@ -268,31 +283,54 @@ fn binary_op_check(pos: usize, tokens: &[Token]) -> Result<(), Token> {
     Ok(())
 }
 
-fn expr_check(tokens: &[Token]) -> Result<(), SyntaxErr>{
+#[derive(Debug, Clone)]
+enum Instruction {
+    PushOp(Operation),
+    PushNumber(f64),
+    LeftParen,
+    RightParen,
+    PushArg(String),
+    FunctionCall(String, Vec<Vec<Instruction>>),
+}
+
+fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, SyntaxErr> {
     let mut parens = vec![];
-    for (i, Token {ttype, ..}) in tokens.iter().enumerate() {
+    let mut instructions = vec![];
+    let mut i = 0;
+    'outer: while i < tokens.len() {
+        let ttype = &tokens[i].ttype;
         match ttype {
-            TokenType::Operation(Operation::Add) |
-            TokenType::Operation(Operation::Sub) |
-            TokenType::Operation(Operation::Mul) |
-            TokenType::Operation(Operation::Div) |
-            TokenType::Operation(Operation::Pow) => {
+            // )|num|ident bin unary|(|num|ident
+            TokenType::Operation(
+                op @ Operation::Add |
+                op @ Operation::Sub |
+                op @ Operation::Mul |
+                op @ Operation::Div |
+                op @ Operation::Pow
+            ) => {
                 if let Err(token) = binary_op_check(i, tokens) {
                     return Err(SyntaxErr::MissingArg(token));
                 }
+                instructions.push(Instruction::PushOp(op.clone()));
             },
-            TokenType::Operation(Operation::UnaryPlus) |
-            TokenType::Operation(Operation::UnaryMinus) => {
+            TokenType::Operation(
+                op @ Operation::UnaryPlus |
+                op @ Operation::UnaryMinus
+            ) => {
                 if i == tokens.len()-1 || !is_number(&tokens[i+1]) {
                     unreachable!("Probably error in parse()");
                 }
+                instructions.push(Instruction::PushOp(op.clone()));
             },
+            // op|lparen|none lparen lparen|num|ident|unary
             TokenType::Operation(Operation::LeftParen) => {
                 if i != 0 {
                     match tokens[i-1].ttype {
-                        TokenType::Operation(Operation::RightParen) |
-                        TokenType::Number(_) => return Err(SyntaxErr::MissingOp(tokens[i-1].clone(), tokens[i].clone())),
-                        _ => {},
+                        TokenType::Operation(Operation::RightParen) => {
+                            return Err(SyntaxErr::MissingOp(tokens[i-1].clone(), tokens[i].clone()));
+                        },
+                        TokenType::Operation(_) => {},
+                        _ => return Err(SyntaxErr::MissingOp(tokens[i-1].clone(), tokens[i].clone())),
                     }
                 }
                 if i == tokens.len()-1 {
@@ -302,32 +340,31 @@ fn expr_check(tokens: &[Token]) -> Result<(), SyntaxErr>{
                     TokenType::Operation(Operation::UnaryPlus)  |
                     TokenType::Operation(Operation::UnaryMinus) |
                     TokenType::Operation(Operation::LeftParen)  |
-                    TokenType::Operation(Operation::RightParen) |
                     TokenType::Ident(_)                         |
                     TokenType::Number(_) => {},
-                    // TokenType::Operation(Operation::RightParen) => return Err(SyntaxErr::EmptyParens(tokens[i].clone())),
                     _ => return Err(SyntaxErr::MissingArg(tokens[i+1].clone())),
                 }
                 parens.push(&tokens[i]);
+                instructions.push(Instruction::LeftParen);
             },
+            // num|arg|rparen rparen op|rparen|none
             TokenType::Operation(Operation::RightParen) => {
                 if i == 0 {
                     return Err(SyntaxErr::MissingLeftParen(tokens[i].clone()));
                 }
                 match tokens[i-1].ttype {
                     TokenType::Operation(Operation::RightParen) |
-                    TokenType::Operation(Operation::LeftParen) |
                     TokenType::Number(_) => {},
+                    TokenType::Ident(_) => {},
+                    TokenType::Operation(Operation::LeftParen) => return Err(SyntaxErr::EmptyParens(tokens[i].clone())),
                     _ => return Err(SyntaxErr::MissingArg(tokens[i-1].clone())),
                 }
                 if i < tokens.len()-1 {
                     match tokens[i+1].ttype {
-                        TokenType::Operation(Operation::Add)        |
-                        TokenType::Operation(Operation::Sub)        |
-                        TokenType::Operation(Operation::Div)        |
-                        TokenType::Operation(Operation::Mul)        |
-                        TokenType::Operation(Operation::RightParen) |
-                        TokenType::Symbol(Symbol::Comma) => {},
+                        TokenType::Operation(Operation::LeftParen) => {
+                            return Err(SyntaxErr::MissingOp(tokens[i].clone(), tokens[i+1].clone()));
+                        },
+                        TokenType::Operation(_) => {},
                         _ => return Err(SyntaxErr::MissingOp(tokens[i].clone(), tokens[i+1].clone())),
                     }
                 }
@@ -336,34 +373,95 @@ fn expr_check(tokens: &[Token]) -> Result<(), SyntaxErr>{
                 } else {
                     return Err(SyntaxErr::MissingLeftParen(tokens[i].clone()));
                 }
+                instructions.push(Instruction::RightParen);
             },
-            TokenType::Number(_) => {
-                if i < tokens.len()-1 {
-                    match tokens[i+1].ttype {
-                        TokenType::Number(_) |
-                        TokenType::Ident(_)  |
-                        TokenType::Operation(Operation::LeftParen) => return Err(SyntaxErr::MissingOp(tokens[i].clone(), tokens[i+1].clone())),
-                        _ => {},
+            // op|lparen|none num !unary|rparen|none
+            TokenType::Number(num) => {
+                if i != 0 {
+                    match tokens[i-1].ttype {
+                        TokenType::Operation(Operation::RightParen) => {
+                            return Err(SyntaxErr::MissingOp(tokens[i-1].clone(), tokens[i].clone()));
+                        }
+                        TokenType::Operation(_) => {},
+                        _ => return Err(SyntaxErr::MissingOp(tokens[i-1].clone(), tokens[i].clone())),
                     }
                 }
+                if i < tokens.len()-1 {
+                    match tokens[i+1].ttype {
+                        TokenType::Operation(Operation::Add) |
+                        TokenType::Operation(Operation::Sub) |
+                        TokenType::Operation(Operation::Mul) |
+                        TokenType::Operation(Operation::Div) |
+                        TokenType::Operation(Operation::Pow) |
+                        TokenType::Operation(Operation::RightParen) => {},
+                        _ => return Err(SyntaxErr::MissingOp(tokens[i].clone(), tokens[i+1].clone())),
+                    }
+                }
+                instructions.push(Instruction::PushNumber(*num));
             },
-            TokenType::Symbol(Symbol::Comma) => {
-                // )|num , ident|num
-                if i == 0 {
-                    return Err(SyntaxErr::UnexpectedToken(tokens[i].clone()));
+            TokenType::Symbol(Symbol::Comma) => unreachable!(),
+            TokenType::Ident(ident) => {
+                for arg in args {
+                    if ident == arg {
+                        instructions.push(Instruction::PushArg(arg.clone()));
+                        i += 1;
+                        continue 'outer;
+                    }
                 }
-                match tokens[i-1].ttype {
-                    TokenType::Operation(Operation::RightParen) |
-                    TokenType::Number(_) => {},
-                    _ => return Err(SyntaxErr::MissingArg(tokens[i].clone())),
+                let mut pos = i + 1;
+                if pos >= tokens.len() {
+                    return Err(SyntaxErr::MissingLeftParen(tokens[i].clone()));
                 }
-                if i == tokens.len()-1 {
-                    return Err(SyntaxErr::UnexpectedToken(tokens[i].clone()));
+                match tokens[pos].ttype {
+                    TokenType::Operation(Operation::LeftParen) => {},
+                    _ => return Err(SyntaxErr::MissingLeftParen(tokens[i].clone())),
                 }
-                match tokens[i+1].ttype {
-                    TokenType::Ident(_) | TokenType::Number(_) => {},
-                    _ => return Err(SyntaxErr::MissingArg(tokens[i].clone())),
+                pos += 1;
+                let mut last = pos;
+                let mut params = vec![];
+                let mut parens = 1;
+                loop {
+                    let token = match tokens.get(pos) {
+                        Some(token) => token,
+                        None => return Err(SyntaxErr::MissingRightParen(tokens[i+1].clone())),
+                    };
+                    match token.ttype {
+                        TokenType::Operation(Operation::LeftParen) => parens += 1,
+                        TokenType::Operation(Operation::RightParen) => parens -= 1,
+                        _ => {},
+                    }
+                    if parens == 0 {
+                        if pos - last > 0 {
+                            match expr_check(&tokens[last..pos], &args) {
+                                Err(err) => return Err(err),
+                                Ok(instructions) => params.push(instructions),
+                            }
+                        }
+                        break;
+                    }
+                    if token.ttype == TokenType::Symbol(Symbol::Comma) {
+                        if pos - last <= 0 {
+                            return Err(SyntaxErr::MissingArg(tokens[last].clone()));
+                        }
+                        match expr_check(&tokens[last..pos], &args) {
+                            Err(err) => return Err(err),
+                            Ok(instructions) => params.push(instructions),
+                        }
+                        if pos >= tokens.len()-1 {
+                            return Err(SyntaxErr::MissingArg(tokens[pos].clone()));
+                        }
+                        match tokens[pos+1].ttype {
+                            TokenType::Operation(Operation::RightParen) => {
+                                return Err(SyntaxErr::MissingArg(tokens[pos].clone()));
+                            },
+                            _ => {},
+                        }
+                        last = pos + 1;
+                    }
+                    pos += 1;
                 }
+                instructions.push(Instruction::FunctionCall(ident.clone(), params));
+                i = pos;
             },
             TokenType::Symbol(Symbol::Assign) => {
                 return Err(SyntaxErr::UnexpectedToken(tokens[i].clone()));
@@ -371,116 +469,20 @@ fn expr_check(tokens: &[Token]) -> Result<(), SyntaxErr>{
             TokenType::Keyword(Keyword::Def) => {
                 return Err(SyntaxErr::DefInsideOfExpr(tokens[i].clone()));
             },
-            TokenType::Ident(_) => {
-                if i < tokens.len()-1 {
-                    match tokens[i+1].ttype {
-                        TokenType::Number(_) |
-                        TokenType::Ident(_)  => return Err(SyntaxErr::MissingOp(tokens[i].clone(), tokens[i+1].clone())),
-                        _ => {},
-                    }
-                }
-            },
         }
+        i += 1;
     }
     if parens.len() > 0 {
         return Err(SyntaxErr::MissingRightParen(parens[0].clone()));
     }
-    Ok(())
+    Ok(instructions)
 }
 
-fn syntax_check(tokens: &[Token]) -> Result<(), SyntaxErr>{
-    assert!(tokens.len() > 0);
-    match tokens[0].ttype {
-        TokenType::Keyword(Keyword::Def) => def_check(tokens),
-        _ => expr_check(tokens),
-    }
-}
-
-fn semantic_check(expr: &[Token], args: &[String]) -> Result<(), String> {
-    let mut func_call = false;
-    'outer: for (i, Token {ttype, ..}) in expr.iter().enumerate() {
-        match ttype {
-            TokenType::Ident(ident) => {
-                for arg in args {
-                    if ident == arg {
-                        continue 'outer;
-                    }
-                }
-                func_call = true;
-                if i == expr.len()-1 {
-                    return Err("Missing left paren".to_string());
-                }
-                match expr[i+1].ttype {
-                    TokenType::Operation(Operation::LeftParen) => {},
-                    _ => return Err("Missing left paren".to_string()),
-                }
-            },
-            TokenType::Operation(Operation::RightParen) => {
-                match expr[i-1].ttype {
-                    TokenType::Operation(Operation::LeftParen) => {
-                        if !func_call {
-                            return Err("Empty parentheses".to_string());
-                        }
-                    },
-                    _ => {},
-                }
-            },
-            _ => {},
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Func {
+    ident: String,
     args: Vec<String>,
-    expr: Vec<Token>,
-}
-
-fn add_function(functions: &mut HashMap<String, Func>, tokens: &[Token]) -> bool {
-    assert!(tokens.len() >= 2);
-    let ident = match &tokens[1].ttype {
-        TokenType::Ident(ident) => ident,
-        _ => unreachable!("Error in syntax checking"),
-    };
-    if functions.contains_key(ident) {
-        return false;
-    }
-    let mut i = 3;
-    let mut args = vec![];
-    loop {
-        match tokens.get(i) {
-            Some(token) => match &token.ttype {
-                TokenType::Ident(ident) => args.push(ident.clone()),
-                TokenType::Operation(Operation::RightParen) => {
-                    i += 1;
-                    break;
-                },
-                _ => unreachable!("Error in syntax checking"),
-            },
-            None => unreachable!("Error in syntax checking"),
-        }
-        match tokens.get(i+1) {
-            Some(token) => match token.ttype {
-                TokenType::Operation(Operation::RightParen) => {
-                    i += 2;
-                    break
-                },
-                TokenType::Symbol(Symbol::Comma) => {},
-                _ => unreachable!("Error in syntax checking"),
-            },
-            None => unreachable!("Error in syntax checking"),
-        }
-        i += 2;
-    }
-    match tokens.get(i) {
-        Some(Token {ttype: TokenType::Symbol(Symbol::Assign), ..}) => {},
-        _ => unreachable!("Error in syntax checking"),
-    }
-    assert!(i+1 < tokens.len());
-    let expr = tokens[i+1..].to_vec();
-    functions.insert(ident.clone(), Func { args, expr });
-    true
+    expr: Vec<Instruction>,
 }
 
 fn op_priority(op: &Operation) -> u8 {
@@ -535,36 +537,24 @@ fn apply_op(numbers: &mut Vec<f64>, op: Operation) {
     }
 }
 
-fn eval_func(functions: &HashMap<String, Func>, func: &Func, args: &Vec<f64>) -> f64 {
-    let mut expr = func.expr.clone();
-    for i in 0..expr.len() {
-        match expr[i].ttype.clone() {
-            TokenType::Ident(ident) => {
-                for (j, arg) in func.args.iter().enumerate() {
-                    if *arg == ident {
-                        expr[i] = Token {
-                            ttype: TokenType::Number(args[j]),
-                            pos: 0,
-                        };
-                    }
-                }
-            },
-            _ => {},
-        }
-    }
-    evaluate(&expr, &functions)
+#[derive(Debug)]
+enum EvalErr {
+    ParamsCountDontMatch(String, usize, usize),
+    UnknownArg(String, String),
+    UnknownFunction(String),
 }
 
-fn evaluate(tokens: &[Token], functions: &HashMap<String, Func>) -> f64 {
+fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -> Result<f64, EvalErr> {
+    println!("{:?}", func.expr);
     let mut numbers = vec![];
     let mut operations = vec![];
     let mut i = 0;
-    while i < tokens.len() {
-        let token = &tokens[i];
-        match &token.ttype {
-            TokenType::Number(num) => numbers.push(*num),
-            TokenType::Operation(Operation::LeftParen) => operations.push(Operation::LeftParen),
-            TokenType::Operation(Operation::RightParen) => {
+    'outer: while i < func.expr.len() {
+        let instr = &func.expr[i];
+        match instr {
+            Instruction::PushNumber(num) => numbers.push(*num),
+            Instruction::LeftParen => operations.push(Operation::LeftParen),
+            Instruction::RightParen => {
                 while let Some(last) = operations.pop() {
                     if last == Operation::LeftParen {
                         break;
@@ -572,7 +562,7 @@ fn evaluate(tokens: &[Token], functions: &HashMap<String, Func>) -> f64 {
                     apply_op(&mut numbers, last);
                 }
             },
-            TokenType::Operation(op) => {
+            Instruction::PushOp(op) => {
                 if let None = operations.last() {
                     operations.push(op.clone());
                 } else {
@@ -586,43 +576,44 @@ fn evaluate(tokens: &[Token], functions: &HashMap<String, Func>) -> f64 {
                     operations.push(op.clone());
                 }
             },
-            TokenType::Ident(ident) => {
-                if !functions.contains_key(ident) {
-                    todo!("Properly report error");
+            Instruction::PushArg(arg) => {
+                if func.args.len() != params.len() {
+                    return Err(EvalErr::ParamsCountDontMatch(func.ident.clone(), func.args.len(), params.len()));
                 }
-                let mut args = vec![];
-                let mut j = i + 2;
-                let mut parens = 0;
-                'outer: while parens != 0 || tokens[j].ttype != TokenType::Operation(Operation::RightParen) {
-                    match tokens[j].ttype {
-                        TokenType::Operation(Operation::LeftParen) => parens += 1,
-                        TokenType::Operation(Operation::RightParen) => parens -= 1,
-                        _ => {},
+                for (j, farg) in func.args.iter().enumerate() {
+                    if *arg == *farg {
+                        numbers.push(params[j]);
+                        i += 1;
+                        continue 'outer;
                     }
-                    let mut comma_pos = j;
-                    let mut parens = 1;
-                    while !(tokens[comma_pos].ttype == TokenType::Symbol(Symbol::Comma) && parens == 1) {
-                        match tokens[comma_pos].ttype {
-                            TokenType::Operation(Operation::LeftParen) => parens += 1,
-                            TokenType::Operation(Operation::RightParen) => parens -= 1,
-                            _ => {},
-                        }
-                        if tokens[comma_pos].ttype == TokenType::Operation(Operation::RightParen) && parens == 0 {
-                            args.push(evaluate(&tokens[j..comma_pos+1], functions));
-                            j = comma_pos + 1;
-                            break 'outer;
-                        }
-                        comma_pos += 1;
-                    }
-                    args.push(evaluate(&tokens[j..comma_pos], functions));
-                    j = comma_pos + 1;
                 }
-                numbers.push(eval_func(&functions, &functions[ident], &args));
-                i = j + 1;
+                return Err(EvalErr::UnknownArg(func.ident.clone(), arg.clone()));
             },
-            TokenType::Symbol(Symbol::Comma) => unreachable!(),
-            TokenType::Symbol(Symbol::Assign) => unreachable!(),
-            TokenType::Keyword(Keyword::Def) => unreachable!(),
+            Instruction::FunctionCall(ident, fparams) => {
+                let fcall = match functions.get(ident) {
+                    Some(func) => func,
+                    None => return Err(EvalErr::UnknownFunction(ident.clone())),
+                };
+                if fcall.args.len() != fparams.len() {
+                    return Err(EvalErr::ParamsCountDontMatch(fcall.ident.clone(), fcall.args.len(), params.len()));
+                }
+                let mut eval_params = vec![];
+                for param in fparams {
+                    let temp = Func {
+                        ident: "temp".to_string(),
+                        args: fcall.args.clone(),
+                        expr: param.to_vec(),
+                    };
+                    match evaluate(&functions, &temp, &params) {
+                        Ok(res) => eval_params.push(res),
+                        Err(err) => return Err(err),
+                    }
+                }
+                match evaluate(&functions, &fcall, &eval_params) {
+                    Ok(res) => numbers.push(res),
+                    Err(err) => return Err(err),
+                }
+            },
         }
         i += 1;
     }
@@ -630,7 +621,7 @@ fn evaluate(tokens: &[Token], functions: &HashMap<String, Func>) -> f64 {
         apply_op(&mut numbers, last);
     }
     assert!(numbers.len() == 1);
-    return numbers.pop().unwrap();
+    Ok(numbers.pop().unwrap())
 }
 
 const DEFAULT_TERM_WIDTH: u16 = 50;
@@ -686,7 +677,7 @@ fn usage() {
 fn main() -> rustyline::Result<()> {
     usage();
     let mut rl = DefaultEditor::new()?;
-    let mut functions = HashMap::new();
+    let mut functions = HashMap::<String, Func>::new();
     loop {
         let readline = rl.readline("> ");
         let mut input = match readline {
@@ -705,6 +696,16 @@ fn main() -> rustyline::Result<()> {
         match input.trim() {
             "" => continue,
             "exit" => break,
+            "funcs" => {
+                for (ident, func) in functions.iter() {
+                    print!("  {ident}(");
+                    for arg in &func.args {
+                        print!("{arg}, ");
+                    }
+                    println!(")");
+                }
+                continue;
+            },
             "help" => {
                 usage();
                 continue;
@@ -736,8 +737,47 @@ fn main() -> rustyline::Result<()> {
             },
         };
 
-        match syntax_check(&tokens) {
-            Ok(()) => {},
+        let is_def = tokens.len() > 0 && tokens[0].ttype == TokenType::Keyword(Keyword::Def);
+        let mut syntax_err = Ok(vec![]);
+        if is_def {
+            match create_function(&tokens) {
+                Ok((ident, func)) => {
+                    if functions.contains_key(&ident) {
+                        todo!("Properly report error");
+                    }
+                    functions.insert(ident.clone(), func.clone());
+                    println!("[Info]: added function {ident}({args:?}) = ",args = func.args);
+                    for instr in &func.expr {
+                        println!("    {:?},", instr);
+                    }
+                },
+                Err(err) => syntax_err = Err(err),
+            }
+        } else {
+            syntax_err = expr_check(&tokens, &vec![]);
+            if let Ok(ref instructions) = syntax_err {
+                println!("[Info]: instructions");
+                for instr in instructions {
+                    println!("    {:?},", instr);
+                }
+                println!("[Info]: {} instructions in total", instructions.len());
+            }
+        }
+
+        match syntax_err {
+            Ok(instructions) => {
+                if !is_def {
+                    let main = Func {
+                        ident: "main".to_string(),
+                        args: vec![],
+                        expr: instructions,
+                    };
+                    match evaluate(&functions, &main, &vec![]) {
+                        Ok(res) => println!("=> {res}"),
+                        Err(err) => println!("{:?}", err),
+                    }
+                }
+            },
             Err(SyntaxErr::MissingArg(token)) => {
                 print_err(&input, &format!("Missing argument for '{:?}'", token.ttype), token.pos);
                 continue;
@@ -784,34 +824,6 @@ fn main() -> rustyline::Result<()> {
             },
         }
 
-        // TODO: Properly handle adding the function
-        if tokens[0].ttype == TokenType::Keyword(Keyword::Def) {
-            if !(add_function(&mut functions, &tokens)) {
-                print_err(&input, &format!("Function with the name '{:?}' already exists", tokens[1].ttype), tokens[1].pos);
-                continue;
-            }
-            let name = match &tokens[1].ttype {
-                TokenType::Ident(ident) => ident,
-                _ => unreachable!(),
-            };
-            let func = functions.get(name).unwrap();
-            match semantic_check(&func.expr, &func.args) {
-                Err(err) => { 
-                    println!("[Error]: {err}");
-                    continue;
-                },
-                Ok(()) => {},
-            }
-            println!("[Info]: list of functions");
-            println!("{functions:?}");
-        } else {
-            let main = Func {
-                expr: tokens,
-                args: vec![],
-            };
-            let answer = eval_func(&functions, &main, &vec![]);
-            println!("=> {}", answer);
-        }
     }
     Ok(())
 }
