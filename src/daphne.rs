@@ -48,13 +48,6 @@ enum ParseErr {
     UnknownWord(usize),
 }
 
-fn is_number(token: &Token) -> bool {
-    match token.ttype {
-        TokenType::Number(_) => true,
-        _ => false,
-    }
-}
-
 fn is_numeric(ch: char) -> bool {
     ('0'..='9').contains(&ch) || ch == '.'
 }
@@ -745,7 +738,10 @@ fn print_functions(functions: &HashMap::<String, Func>) {
     if functions.len() == 0 {
         println!("    empty");
     }
-    for (ident, func) in functions.iter() {
+    let mut sorted: Vec<Func> = functions.iter().map(|(_, func)| func.clone()).collect();
+    sorted.sort_by(|a, b| a.ident.partial_cmp(&b.ident).unwrap());
+    for func in sorted {
+        let ident = func.ident;
         let mut buffer = vec![];
         write!(&mut buffer, "    {ident}(").unwrap();
         for arg in &func.args {
