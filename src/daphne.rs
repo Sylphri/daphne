@@ -68,7 +68,8 @@ fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
         Some(ch) => ch,
         None => return false,
     };
-    if !(is_numeric(ch) || is_latin_letter(ch)) || tokens.len() == 0 {
+    if tokens.len() == 0 { return true; }
+    if !(is_numeric(ch) || is_latin_letter(ch)) {
         return false;
     }
     match tokens[tokens.len()-1].ttype {
@@ -319,8 +320,12 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                 op @ Operation::UnaryPlus |
                 op @ Operation::UnaryMinus
             ) => {
-                if i == tokens.len()-1 || !is_number(&tokens[i+1]) {
-                    unreachable!("Probably error in parse()");
+                if i == tokens.len()-1 {
+                    return Err(SyntaxErr::MissingArg(tokens[i].clone()));
+                }
+                match tokens[i+1].ttype {
+                    TokenType::Number(_) | TokenType::Ident(_) => {},
+                    _ => unreachable!("Probably error in parse()"),
                 }
                 instructions.push(Instruction::PushOp(op.clone()));
             },
