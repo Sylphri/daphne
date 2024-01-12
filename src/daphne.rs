@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::collections::HashMap;
 use terminal_size::terminal_size;
 use rustyline::DefaultEditor;
@@ -73,8 +74,14 @@ fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
         Some(ch) => ch,
         None => return false,
     };
-    (tokens.len() == 0 || is_operation(&tokens[tokens.len()-1]))
-        && (is_numeric(ch) || is_latin_letter(ch))
+    if !(is_numeric(ch) || is_latin_letter(ch)) || tokens.len() == 0 {
+        return false;
+    }
+    match tokens[tokens.len()-1].ttype {
+        TokenType::Operation(Operation::RightParen) => false,
+        TokenType::Operation(_) => true,
+        _ => false,
+    }
 }
 
 fn trim_start(line: &str) -> (&str, usize) {
@@ -210,7 +217,7 @@ fn create_function(tokens: &[Token]) -> Result<(String, Func), SyntaxErr> {
     pos += 1;
     match tokens.get(pos) {
         Some(Token {ttype: TokenType::Operation(Operation::LeftParen), ..}) => {},
-        _ =>  return Err(SyntaxErr::MissingLeftParen(tokens[pos].clone())),
+        _ =>  return Err(SyntaxErr::MissingLeftParen(tokens[pos-1].clone())),
     }
     pos += 1;
     let mut args = vec![];
@@ -246,7 +253,7 @@ fn create_function(tokens: &[Token]) -> Result<(String, Func), SyntaxErr> {
     }
     pos += 1;
     if pos >= tokens.len() {
-        return Err(SyntaxErr::MissingFuncBody(tokens[pos].clone()));
+        return Err(SyntaxErr::MissingFuncBody(tokens[pos-1].clone()));
     }
     if let Err(err) = expr_check(&tokens[pos..], &args) {
         return Err(err);
@@ -443,6 +450,10 @@ fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Syn
                         if pos - last <= 0 {
                             return Err(SyntaxErr::MissingArg(tokens[last].clone()));
                         }
+                        if parens > 1 { 
+                            pos += 1;
+                            continue;
+                        }
                         match expr_check(&tokens[last..pos], &args) {
                             Err(err) => return Err(err),
                             Ok(instructions) => params.push(instructions),
@@ -542,6 +553,7 @@ enum EvalErr {
     ParamsCountDontMatch(String, usize, usize),
     UnknownArg(String, String),
     UnknownFunction(String),
+    RecursiveFunction,
 }
 
 fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -> Result<f64, EvalErr> {
@@ -594,14 +606,17 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                     Some(func) => func,
                     None => return Err(EvalErr::UnknownFunction(ident.clone())),
                 };
+                if *ident == func.ident {
+                    return Err(EvalErr::RecursiveFunction);
+                }
                 if fcall.args.len() != fparams.len() {
-                    return Err(EvalErr::ParamsCountDontMatch(fcall.ident.clone(), fcall.args.len(), params.len()));
+                    return Err(EvalErr::ParamsCountDontMatch(fcall.ident.clone(), fcall.args.len(), fparams.len()));
                 }
                 let mut eval_params = vec![];
                 for param in fparams {
                     let temp = Func {
                         ident: "temp".to_string(),
-                        args: fcall.args.clone(),
+                        args: func.args.clone(),
                         expr: param.to_vec(),
                     };
                     match evaluate(&functions, &temp, &params) {
@@ -662,6 +677,61 @@ fn print_err(input: &str, message: &str, pos: usize) {
     }
 }
 
+fn syntax_err(input: &str, err: SyntaxErr) {
+    match err {
+        SyntaxErr::MissingArg(token) => {
+            print_err(&input, &format!("Missing argument for '{:?}'", token.ttype), token.pos);
+        },
+        SyntaxErr::MissingOp(a, b) => {
+            print_err(&input, &format!("Missing operation between '{:?}' and '{:?}'", a.ttype, b.ttype), b.pos-1);
+        },
+        SyntaxErr::MissingRightParen(token) => {
+            print_err(&input, &format!("Missing right paren"), token.pos);
+        },
+        SyntaxErr::MissingLeftParen(token) => {
+            print_err(&input, &format!("Missing left paren"), token.pos);
+        },
+        SyntaxErr::EmptyParens(token) => {
+            print_err(&input, &format!("Empty parentheses"), token.pos);
+        },
+        SyntaxErr::MissingIdent(token) => {
+            print_err(&input, &format!("Missing identifier in function declaration"), token.pos);
+        },
+        SyntaxErr::MissingComma(token) => {
+            print_err(&input, &format!("Missing comma in function declaration"), token.pos);
+        },
+        SyntaxErr::MissingAssign(token) => {
+            print_err(&input, &format!("Missing assign in function declaration"), token.pos);
+        },
+        SyntaxErr::MissingFuncBody(token) => {
+            print_err(&input, &format!("Missing body of function in declaration"), token.pos);
+        },
+        SyntaxErr::UnexpectedToken(token) => {
+            print_err(&input, &format!("Unexpected token '{:?}'", token.ttype), token.pos);
+        },
+        SyntaxErr::DefInsideOfExpr(token) => {
+            print_err(&input, &format!("'def' keyword inside of expression"), token.pos);
+        },
+    }
+}
+
+fn eval_err(err: EvalErr) {
+    match err {
+        EvalErr::ParamsCountDontMatch(ident, args_cnt, params_cnt) => {
+            println!("[Error]: Function '{ident}' requires {args_cnt} parameters, but found {params_cnt}");
+        },
+        EvalErr::UnknownArg(ident, arg) => {
+            println!("[Error]: Function '{ident}' doesn't have argument '{arg}'");
+        },
+        EvalErr::UnknownFunction(ident) => {
+            println!("[Error]: Function '{ident}' doesn't defined");
+        },
+        EvalErr::RecursiveFunction => {
+            println!("[Error]: Recursive functions is not allowed");
+        },
+    }
+}
+
 fn usage() {
     println!("Welcome to Daphne, a simple math shell.");
     println!("Usage:");
@@ -674,13 +744,31 @@ fn usage() {
     println!();
 }
 
+fn print_functions(functions: &HashMap::<String, Func>) {
+    if functions.len() == 0 {
+        println!("    empty");
+    }
+    for (ident, func) in functions.iter() {
+        let mut buffer = vec![];
+        write!(&mut buffer, "    {ident}(").unwrap();
+        for arg in &func.args {
+            write!(&mut buffer, "{arg}, ").unwrap();
+        }
+        if func.args.len() > 0 {
+            buffer.pop().unwrap();
+            buffer.pop().unwrap();
+        }
+        write!(&mut buffer, ")").unwrap();
+        println!("{}", String::from_utf8(buffer).unwrap());
+    }
+}
+
 fn main() -> rustyline::Result<()> {
     usage();
     let mut rl = DefaultEditor::new()?;
     let mut functions = HashMap::<String, Func>::new();
     loop {
-        let readline = rl.readline("> ");
-        let mut input = match readline {
+        let mut input = match rl.readline(" > ") {
             Ok(line) => {
                 match rl.add_history_entry(line.as_str()) {
                     Err(err) => println!("[Info]: Can't add entry to history '{err}"),
@@ -696,14 +784,8 @@ fn main() -> rustyline::Result<()> {
         match input.trim() {
             "" => continue,
             "exit" => break,
-            "funcs" => {
-                for (ident, func) in functions.iter() {
-                    print!("  {ident}(");
-                    for arg in &func.args {
-                        print!("{arg}, ");
-                    }
-                    println!(")");
-                }
+            "list" => {
+                print_functions(&functions);
                 continue;
             },
             "help" => {
@@ -738,12 +820,31 @@ fn main() -> rustyline::Result<()> {
         };
 
         let is_def = tokens.len() > 0 && tokens[0].ttype == TokenType::Keyword(Keyword::Def);
-        let mut syntax_err = Ok(vec![]);
+        let mut expr = Ok(vec![]);
         if is_def {
             match create_function(&tokens) {
                 Ok((ident, func)) => {
                     if functions.contains_key(&ident) {
-                        todo!("Properly report error");
+                        match rl.readline(format!("Function '{ident}' already exist, want to redefine? (y/n): ").as_str()) {
+                            Ok(res) => match res.to_lowercase().as_str() {
+                                "y" => {
+                                    functions.insert(ident.clone(), func.clone());
+                                    println!("[Info]: added function {ident}({args:?}) = ",args = func.args);
+                                    for instr in &func.expr {
+                                        println!("    {:?},", instr);
+                                    }
+                                    println!("  Successfully redefined");
+                                },
+                                _ => {
+                                    println!("  Cancelled");
+                                }
+                            },
+                            Err(err) => {
+                                println!("{err}");
+                                break;
+                            }
+                        }
+                        continue;
                     }
                     functions.insert(ident.clone(), func.clone());
                     println!("[Info]: added function {ident}({args:?}) = ",args = func.args);
@@ -751,11 +852,11 @@ fn main() -> rustyline::Result<()> {
                         println!("    {:?},", instr);
                     }
                 },
-                Err(err) => syntax_err = Err(err),
+                Err(err) => expr = Err(err),
             }
         } else {
-            syntax_err = expr_check(&tokens, &vec![]);
-            if let Ok(ref instructions) = syntax_err {
+            expr = expr_check(&tokens, &vec![]);
+            if let Ok(ref instructions) = expr {
                 println!("[Info]: instructions");
                 for instr in instructions {
                     println!("    {:?},", instr);
@@ -764,7 +865,7 @@ fn main() -> rustyline::Result<()> {
             }
         }
 
-        match syntax_err {
+        match expr {
             Ok(instructions) => {
                 if !is_def {
                     let main = Func {
@@ -774,56 +875,12 @@ fn main() -> rustyline::Result<()> {
                     };
                     match evaluate(&functions, &main, &vec![]) {
                         Ok(res) => println!("=> {res}"),
-                        Err(err) => println!("{:?}", err),
+                        Err(err) => eval_err(err),
                     }
                 }
             },
-            Err(SyntaxErr::MissingArg(token)) => {
-                print_err(&input, &format!("Missing argument for '{:?}'", token.ttype), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::MissingOp(a, b)) => {
-                print_err(&input, &format!("Missing operation between '{:?}' and '{:?}'", a.ttype, b.ttype), b.pos-1);
-                continue;
-            },
-            Err(SyntaxErr::MissingRightParen(token)) => {
-                print_err(&input, &format!("Missing right paren"), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::MissingLeftParen(token)) => {
-                print_err(&input, &format!("Missing left paren"), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::EmptyParens(token)) => {
-                print_err(&input, &format!("Empty parentheses"), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::MissingIdent(token)) => {
-                print_err(&input, &format!("Missing identifier in function declaration"), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::MissingComma(token)) => {
-                print_err(&input, &format!("Missing comma in function declaration"), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::MissingAssign(token)) => {
-                print_err(&input, &format!("Missing assign in function declaration"), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::MissingFuncBody(token)) => {
-                print_err(&input, &format!("Missing body of function in declaration"), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::UnexpectedToken(token)) => {
-                print_err(&input, &format!("Unexpected token '{:?}'", token.ttype), token.pos);
-                continue;
-            },
-            Err(SyntaxErr::DefInsideOfExpr(token)) => {
-                print_err(&input, &format!("'def' keyword inside of expression"), token.pos);
-                continue;
-            },
+            Err(err) => syntax_err(&input, err),
         }
-
     }
     Ok(())
 }
