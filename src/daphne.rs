@@ -1,4 +1,5 @@
-use std::io::Write;
+use std::io::{Write, Read};
+use std::fs::File;
 use std::collections::HashMap;
 use terminal_size::terminal_size;
 use rustyline::DefaultEditor;
@@ -45,13 +46,6 @@ struct Token {
 #[derive(Debug)]
 enum ParseErr {
     UnknownWord(usize),
-}
-
-fn is_operation(token: &Token) -> bool {
-    match token.ttype {
-        TokenType::Operation(_) => true,
-        _ => false,
-    }
 }
 
 fn is_number(token: &Token) -> bool {
@@ -202,11 +196,18 @@ enum SyntaxErr {
     MissingFuncBody(Token),
     UnexpectedToken(Token),
     DefInsideOfExpr(Token),
+    MissingDef,
+    EmptyExpr,
 }
 
-fn create_function(tokens: &[Token]) -> Result<(String, Func), SyntaxErr> {
-    assert!(tokens.len() > 0);
+fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
+    if tokens.len() == 0 {
+        return Err(SyntaxErr::EmptyExpr);
+    }
     let mut pos = 0;
+    if tokens[pos].ttype != TokenType::Keyword(Keyword::Def) {
+        return Err(SyntaxErr::MissingDef);
+    }
     assert!(tokens[pos].ttype == TokenType::Keyword(Keyword::Def));
     let def = &tokens[pos];
     pos += 1;
@@ -255,18 +256,15 @@ fn create_function(tokens: &[Token]) -> Result<(String, Func), SyntaxErr> {
     if pos >= tokens.len() {
         return Err(SyntaxErr::MissingFuncBody(tokens[pos-1].clone()));
     }
-    if let Err(err) = expr_check(&tokens[pos..], &args) {
-        return Err(err);
-    }
-    let expr = match expr_check(&tokens[pos..], &args) {
+    let expr = match create_expr(&tokens[pos..], &args) {
         Ok(instructions) => instructions,
         Err(err) => return Err(err),
     };
-    Ok((ident.clone(), Func {
+    Ok(Func {
         ident: ident.clone(),
         args: (*args).to_vec(),
         expr: expr,
-    }))
+    })
 }
 
 fn binary_op_check(pos: usize, tokens: &[Token]) -> Result<(), Token> {
@@ -294,20 +292,17 @@ fn binary_op_check(pos: usize, tokens: &[Token]) -> Result<(), Token> {
 enum Instruction {
     PushOp(Operation),
     PushNumber(f64),
-    LeftParen,
-    RightParen,
     PushArg(String),
     FunctionCall(String, Vec<Vec<Instruction>>),
 }
 
-fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, SyntaxErr> {
+fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, SyntaxErr> {
     let mut parens = vec![];
     let mut instructions = vec![];
     let mut i = 0;
     'outer: while i < tokens.len() {
         let ttype = &tokens[i].ttype;
         match ttype {
-            // )|num|ident bin unary|(|num|ident
             TokenType::Operation(
                 op @ Operation::Add |
                 op @ Operation::Sub |
@@ -329,7 +324,6 @@ fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Syn
                 }
                 instructions.push(Instruction::PushOp(op.clone()));
             },
-            // op|lparen|none lparen lparen|num|ident|unary
             TokenType::Operation(Operation::LeftParen) => {
                 if i != 0 {
                     match tokens[i-1].ttype {
@@ -352,9 +346,8 @@ fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Syn
                     _ => return Err(SyntaxErr::MissingArg(tokens[i+1].clone())),
                 }
                 parens.push(&tokens[i]);
-                instructions.push(Instruction::LeftParen);
+                instructions.push(Instruction::PushOp(Operation::LeftParen));
             },
-            // num|arg|rparen rparen op|rparen|none
             TokenType::Operation(Operation::RightParen) => {
                 if i == 0 {
                     return Err(SyntaxErr::MissingLeftParen(tokens[i].clone()));
@@ -380,9 +373,8 @@ fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Syn
                 } else {
                     return Err(SyntaxErr::MissingLeftParen(tokens[i].clone()));
                 }
-                instructions.push(Instruction::RightParen);
+                instructions.push(Instruction::PushOp(Operation::RightParen));
             },
-            // op|lparen|none num !unary|rparen|none
             TokenType::Number(num) => {
                 if i != 0 {
                     match tokens[i-1].ttype {
@@ -406,7 +398,6 @@ fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Syn
                 }
                 instructions.push(Instruction::PushNumber(*num));
             },
-            TokenType::Symbol(Symbol::Comma) => unreachable!(),
             TokenType::Ident(ident) => {
                 for arg in args {
                     if ident == arg {
@@ -439,7 +430,7 @@ fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Syn
                     }
                     if parens == 0 {
                         if pos - last > 0 {
-                            match expr_check(&tokens[last..pos], &args) {
+                            match create_expr(&tokens[last..pos], &args) {
                                 Err(err) => return Err(err),
                                 Ok(instructions) => params.push(instructions),
                             }
@@ -450,11 +441,8 @@ fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Syn
                         if pos - last <= 0 {
                             return Err(SyntaxErr::MissingArg(tokens[last].clone()));
                         }
-                        if parens > 1 { 
-                            pos += 1;
-                            continue;
-                        }
-                        match expr_check(&tokens[last..pos], &args) {
+                        if parens > 1 { pos += 1; continue; }
+                        match create_expr(&tokens[last..pos], &args) {
                             Err(err) => return Err(err),
                             Ok(instructions) => params.push(instructions),
                         }
@@ -480,6 +468,7 @@ fn expr_check(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Syn
             TokenType::Keyword(Keyword::Def) => {
                 return Err(SyntaxErr::DefInsideOfExpr(tokens[i].clone()));
             },
+            TokenType::Symbol(Symbol::Comma) => unreachable!(),
         }
         i += 1;
     }
@@ -557,7 +546,6 @@ enum EvalErr {
 }
 
 fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -> Result<f64, EvalErr> {
-    println!("{:?}", func.expr);
     let mut numbers = vec![];
     let mut operations = vec![];
     let mut i = 0;
@@ -565,8 +553,8 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
         let instr = &func.expr[i];
         match instr {
             Instruction::PushNumber(num) => numbers.push(*num),
-            Instruction::LeftParen => operations.push(Operation::LeftParen),
-            Instruction::RightParen => {
+            Instruction::PushOp(Operation::LeftParen) => operations.push(Operation::LeftParen),
+            Instruction::PushOp(Operation::RightParen) => {
                 while let Some(last) = operations.pop() {
                     if last == Operation::LeftParen {
                         break;
@@ -602,15 +590,15 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                 return Err(EvalErr::UnknownArg(func.ident.clone(), arg.clone()));
             },
             Instruction::FunctionCall(ident, fparams) => {
-                let fcall = match functions.get(ident) {
+                let called_func = match functions.get(ident) {
                     Some(func) => func,
                     None => return Err(EvalErr::UnknownFunction(ident.clone())),
                 };
                 if *ident == func.ident {
                     return Err(EvalErr::RecursiveFunction);
                 }
-                if fcall.args.len() != fparams.len() {
-                    return Err(EvalErr::ParamsCountDontMatch(fcall.ident.clone(), fcall.args.len(), fparams.len()));
+                if called_func.args.len() != fparams.len() {
+                    return Err(EvalErr::ParamsCountDontMatch(called_func.ident.clone(), called_func.args.len(), fparams.len()));
                 }
                 let mut eval_params = vec![];
                 for param in fparams {
@@ -624,7 +612,7 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                         Err(err) => return Err(err),
                     }
                 }
-                match evaluate(&functions, &fcall, &eval_params) {
+                match evaluate(&functions, &called_func, &eval_params) {
                     Ok(res) => numbers.push(res),
                     Err(err) => return Err(err),
                 }
@@ -639,16 +627,14 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
     Ok(numbers.pop().unwrap())
 }
 
-const DEFAULT_TERM_WIDTH: u16 = 50;
-const DEFAULT_TERM_HEIGHT: u16 = 50;
-
 fn print_err(input: &str, message: &str, pos: usize) {
+    const DEFAULT_TERM_WIDTH: u16 = 50;
+    const DEFAULT_TERM_HEIGHT: u16 = 50;
     let (terminal_size::Width(twidth), _) = match terminal_size() {
         Some(tsize) => tsize,
         None => {
             println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
-            (terminal_size::Width(DEFAULT_TERM_WIDTH),
-             terminal_size::Height(DEFAULT_TERM_HEIGHT))
+            (terminal_size::Width(DEFAULT_TERM_WIDTH), terminal_size::Height(DEFAULT_TERM_HEIGHT))
         },
     };
     println!("[Error]: {message}");
@@ -712,6 +698,12 @@ fn syntax_err(input: &str, err: SyntaxErr) {
         SyntaxErr::DefInsideOfExpr(token) => {
             print_err(&input, &format!("'def' keyword inside of expression"), token.pos);
         },
+        SyntaxErr::MissingDef => {
+            println!("Missing 'def' keyword at beginning of the function declaration");
+        },
+        SyntaxErr::EmptyExpr=> {
+            println!("Empty expression");
+        },
     }
 }
 
@@ -763,6 +755,109 @@ fn print_functions(functions: &HashMap::<String, Func>) {
     }
 }
 
+fn parse_err(input: &str, err: ParseErr) {
+    match err {
+        ParseErr::UnknownWord(pos) => {
+            let end = input[pos..].find(|x: char| x.is_ascii_whitespace())
+                .expect("Input must contain at least \\n at the end");
+            let word = &input[pos..pos+end];
+            print_err(&input, &format!("Unknown word {word}"), pos);
+        },
+    }
+}
+
+fn load_file(path: &str) -> Option<Vec<Func>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            println!("[Error]: Can't load file 'path': {err}");
+            return None;
+        },
+    };
+    let mut contents = String::new();
+    if let Err(err) = file.read_to_string(&mut contents) {
+        println!("[Error]: Can't read content of a file 'path': {err}");
+        return None;
+    }
+    let mut functions = vec![];
+    for line in contents.lines() {
+        let mut line = line.to_string();
+        line.push('\n');
+        let tokens = match parse(&line) {
+            Ok(tokens) => { tokens },
+            Err(err)   => {
+                parse_err(&line, err);
+                return None;
+            },
+        };
+        let func = match create_function(&tokens) {
+            Ok(func) => func,
+            Err(err) => {
+                syntax_err(&line, err);
+                return None;
+            }
+        };
+        functions.push(func);
+    }
+    Some(functions)
+}
+
+fn save_file(functions: &HashMap<String, Func>, path: &str) -> std::io::Result<()> {
+    let mut file = File::create(path)?;
+    for (_, func) in functions.iter() {
+        file.write_all(b"def ")?;
+        file.write_all(func.ident.as_bytes())?;
+        file.write_all(b"(")?;
+        for (i, arg) in func.args.iter().enumerate() {
+            file.write_all(arg.as_bytes())?;
+            if i < func.args.len()-1 {
+                file.write_all(b", ")?;
+            }
+        }
+        file.write_all(b") = ")?;
+        save_expr(&mut file, &func.expr)?;
+        file.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+fn save_func_call(file: &mut File, ident: &str, params: &Vec<Vec<Instruction>>) -> std::io::Result<()> {
+    file.write_all(ident.as_bytes())?;
+    file.write_all(b"(")?;
+    for (i, expr) in params.iter().enumerate() {
+        save_expr(file, &expr)?;
+        if i != params.len()-1 {
+            file.write_all(b", ")?;
+        }
+    }
+    file.write_all(b")")?;
+    Ok(())
+}
+
+fn save_expr(file: &mut File, expr: &Vec<Instruction>) -> std::io::Result<()> {
+    for instr in expr {
+        match instr {
+            Instruction::PushNumber(num) => file.write_all(num.to_string().as_bytes())?,
+            Instruction::PushOp(op) => {
+                match op {
+                    Operation::Add | Operation::UnaryPlus => file.write_all(b"+")?,
+                    Operation::Sub | Operation::UnaryMinus => file.write_all(b"-")?,
+                    Operation::Mul => file.write_all(b"*")?,
+                    Operation::Div => file.write_all(b"/")?,
+                    Operation::Pow => file.write_all(b"^")?,
+                    Operation::LeftParen => file.write_all(b"(")?,
+                    Operation::RightParen => file.write_all(b")")?,
+                }
+            },
+            Instruction::PushArg(arg) => file.write_all(arg.as_bytes())?,
+            Instruction::FunctionCall(ident, params) => {
+                save_func_call(file, &ident, &params)?;
+            },
+        }
+    }
+    Ok(())
+}
+
 fn main() -> rustyline::Result<()> {
     usage();
     let mut rl = DefaultEditor::new()?;
@@ -771,7 +866,7 @@ fn main() -> rustyline::Result<()> {
         let mut input = match rl.readline(" > ") {
             Ok(line) => {
                 match rl.add_history_entry(line.as_str()) {
-                    Err(err) => println!("[Info]: Can't add entry to history '{err}"),
+                    Err(err) => println!("[Info]: Can't add entry to history '{err}'"),
                     Ok(_) => {},
                 }
                 line
@@ -781,15 +876,98 @@ fn main() -> rustyline::Result<()> {
                 break;
             }
         };
-        match input.trim() {
-            "" => continue,
-            "exit" => break,
+        let command = match input.split_ascii_whitespace().next() {
+            Some(command) => command,
+            None => continue,
+        };
+        let mut args = input.split_ascii_whitespace().skip(1);
+        match command {
+            "exit" => {
+                if let Some(arg) = args.next() {
+                    println!("[Error]: Unknown argument '{arg}' for command 'exit'");
+                    continue;
+                }
+                break
+            },
             "list" => {
+                if let Some(arg) = args.next() {
+                    println!("[Error]: Unknown argument '{arg}' for command 'list'");
+                    continue;
+                }
                 print_functions(&functions);
                 continue;
             },
             "help" => {
+                if let Some(arg) = args.next() {
+                    println!("[Error]: Unknown argument '{arg}' for command 'help'");
+                    continue;
+                }
                 usage();
+                continue;
+            },
+            "load" => {
+                let path = match args.next() {
+                    Some(arg) => arg,
+                    None => {
+                        println!("[Error]: Missing argument 'path' for command 'load'");
+                        continue;
+                    },
+                };
+                if let Some(arg) = args.next() {
+                    println!("[Error]: Unknown argument '{arg}' for command 'load'");
+                    continue;
+                }
+                let funcs = match load_file(path) {
+                    Some(functions) => functions,
+                    None => continue,
+                };
+                let mut count = 0;
+                for func in &funcs {
+                    if functions.contains_key(&func.ident) {
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    match rl.readline(format!("Loading of this file will redefine some functions ({count}). Do you want to continue? (y/n): ").as_str()) {
+                        Ok(res) => match res.to_lowercase().as_str() {
+                            "y" => {
+                                for func in &funcs {
+                                    functions.insert(func.ident.clone(), func.clone());
+                                }
+                                println!("  Successfully redefined");
+                            },
+                            _ => {
+                                println!("  Cancelled");
+                                continue;
+                            }
+                        },
+                        Err(err) => {
+                            println!("{err}");
+                            break;
+                        }
+                    }
+                }
+                for func in funcs {
+                    functions.insert(func.ident.clone(), func);
+                }
+                continue;
+            },
+            "save" => {
+                let path = match args.next() {
+                    Some(arg) => arg,
+                    None => {
+                        println!("[Error]: Missing argument 'path' for command 'save'");
+                        continue;
+                    },
+                };
+                if let Some(arg) = args.next() {
+                    println!("[Error]: Unknown argument '{arg}' for command 'save'");
+                    continue;
+                }
+                if let Err(err) = save_file(&functions, &path) {
+                    println!("[Error]: Can't save functions in a file '{path}': {err}");
+                    continue;
+                }
                 continue;
             },
             _ => {},
@@ -807,14 +985,7 @@ fn main() -> rustyline::Result<()> {
                 tokens
             },
             Err(err)   => {
-                match err {
-                    ParseErr::UnknownWord(pos) => {
-                        let end = input[pos..].find(|x: char| x.is_ascii_whitespace())
-                            .expect("Input must contain at least \\n at the end");
-                        let word = &input[pos..pos+end];
-                        print_err(&input, &format!("Unknown word {word}"), pos);
-                    }
-                }
+                parse_err(&input, err);
                 continue;
             },
         };
@@ -823,7 +994,8 @@ fn main() -> rustyline::Result<()> {
         let mut expr = Ok(vec![]);
         if is_def {
             match create_function(&tokens) {
-                Ok((ident, func)) => {
+                Ok(func) => {
+                    let ident = func.ident.clone();
                     if functions.contains_key(&ident) {
                         match rl.readline(format!("Function '{ident}' already exist, want to redefine? (y/n): ").as_str()) {
                             Ok(res) => match res.to_lowercase().as_str() {
@@ -855,7 +1027,7 @@ fn main() -> rustyline::Result<()> {
                 Err(err) => expr = Err(err),
             }
         } else {
-            expr = expr_check(&tokens, &vec![]);
+            expr = create_expr(&tokens, &vec![]);
             if let Ok(ref instructions) = expr {
                 println!("[Info]: instructions");
                 for instr in instructions {
