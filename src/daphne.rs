@@ -43,17 +43,15 @@ struct Token {
     pos: usize,
 }
 
-#[derive(Debug)]
-enum ParseErr {
-    UnknownWord(usize),
-}
-
 fn is_numeric(ch: char) -> bool {
     ('0'..='9').contains(&ch) || ch == '.'
 }
 
 fn is_valid_ident_char(ch: char) -> bool {
-    ('a'..='z').contains(&ch) || ('A'..='Z').contains(&ch) || ch == '_'
+    ('a'..='z').contains(&ch) ||
+    ('A'..='Z').contains(&ch) ||
+    ('0'..='9').contains(&ch) ||
+    ch == '_'
 }
 
 fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
@@ -99,16 +97,16 @@ fn parse_word(word: &str) -> Option<TokenType> {
     if let Some(keyword) = parse_keyword(word) {
         return Some(TokenType::Keyword(keyword));
     }
-    if is_valid_ident(word) {
-        return Some(TokenType::Ident(word.to_string()));
-    }
     if let Ok(num) = word.parse() {
         return Some(TokenType::Number(num));
+    }
+    if is_valid_ident(word) {
+        return Some(TokenType::Ident(word.to_string()));
     }
     None
 }
 
-fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
+fn parse(input: &str) -> Result<Vec<Token>, (usize, String)> {
     let reserved_symbols = &[
         // operators
         '+', '-', '*', '/', '^',
@@ -122,12 +120,13 @@ fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
         input = &input[word.len()..];
         while let Some(i) = word.find(reserved_symbols) {
             if i != 0 {
-                match parse_word(&word[0..i]) {
+                let word = &word[0..i];
+                match parse_word(word) {
                     Some(ttype) => tokens.push(Token {
                         ttype: ttype,
                         pos: begin,
                     }),
-                    None => return Err(ParseErr::UnknownWord(begin)),
+                    None => return Err((begin, word.to_string())),
                 }
             }
             tokens.push(Token {
@@ -166,7 +165,7 @@ fn parse(input: &str) -> Result<Vec<Token>, ParseErr> {
                     ttype: ttype,
                     pos: begin,
                 }),
-                None => return Err(ParseErr::UnknownWord(begin)),
+                None => return Err((begin, word.to_string())),
             }
             begin += word.len();
         }
@@ -184,30 +183,23 @@ enum SyntaxErr {
     MissingLeftParen(Token),
     MissingRightParen(Token),
     EmptyParens(Token),
-    MissingIdent(Token),
+    MissingFuncIdent(Token),
+    MissingArgIdent(Token),
+    RepeatingArgIdent(Token),
     MissingComma(Token),
     MissingAssign(Token),
     MissingFuncBody(Token),
-    UnexpectedToken(Token),
+    AssignInsideOfExpr(Token),
     DefInsideOfExpr(Token),
-    MissingDef,
-    EmptyExpr,
 }
 
 fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
-    if tokens.len() == 0 {
-        return Err(SyntaxErr::EmptyExpr);
-    }
-    let mut pos = 0;
-    if tokens[pos].ttype != TokenType::Keyword(Keyword::Def) {
-        return Err(SyntaxErr::MissingDef);
-    }
-    assert!(tokens[pos].ttype == TokenType::Keyword(Keyword::Def));
-    let def = &tokens[pos];
-    pos += 1;
+    assert!(tokens.len() > 0, "There must be at least one token");
+    assert!(tokens[0].ttype == TokenType::Keyword(Keyword::Def), "There must be 'def' keyword at begin of function definition");
+    let mut pos = 1;
     let ident = match &tokens.get(pos) {
         Some(Token {ttype: TokenType::Ident(ident), ..}) => ident,
-        _ =>  return Err(SyntaxErr::MissingIdent(def.clone())),
+        _ =>  return Err(SyntaxErr::MissingFuncIdent(tokens[0].clone())),
     };
     pos += 1;
     match tokens.get(pos) {
@@ -227,13 +219,16 @@ fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
         }
         match &token.ttype {
             TokenType::Ident(arg) => {
+                if args.contains(arg) {
+                    return Err(SyntaxErr::RepeatingArgIdent(token.clone()));
+                }
                 args.push(arg.clone());
             },
-            _ => return Err(SyntaxErr::MissingIdent(tokens[pos-1].clone())),
+            _ => return Err(SyntaxErr::MissingArgIdent(tokens[pos-1].clone())),
         }
         pos += 1;
         if pos >= tokens.len() {
-            return Err(SyntaxErr::MissingComma(tokens[pos-1].clone()));
+            return Err(SyntaxErr::MissingRightParen(tokens[pos-1].clone()));
         }
         match tokens[pos].ttype {
             TokenType::Symbol(Symbol::Comma) => {pos += 1},
@@ -313,9 +308,7 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                 op @ Operation::UnaryPlus |
                 op @ Operation::UnaryMinus
             ) => {
-                if i == tokens.len()-1 {
-                    return Err(SyntaxErr::MissingArg(tokens[i].clone()));
-                }
+                assert!(i < tokens.len()-1, "Error in parse()");
                 match tokens[i+1].ttype {
                     TokenType::Number(_) | TokenType::Ident(_) |
                     TokenType::Operation(Operation::LeftParen) => {},
@@ -377,22 +370,16 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
             TokenType::Number(num) => {
                 if i != 0 {
                     match tokens[i-1].ttype {
-                        TokenType::Operation(Operation::RightParen) => {
-                            return Err(SyntaxErr::MissingOp(tokens[i-1].clone(), tokens[i].clone()));
-                        }
-                        TokenType::Operation(_) => {},
-                        _ => return Err(SyntaxErr::MissingOp(tokens[i-1].clone(), tokens[i].clone())),
+                        TokenType::Operation(Operation::RightParen) |
+                        TokenType::Number(_) | TokenType::Ident(_) => return Err(SyntaxErr::MissingOp(tokens[i-1].clone(), tokens[i].clone())),
+                        _ => {},
                     }
                 }
                 if i < tokens.len()-1 {
                     match tokens[i+1].ttype {
-                        TokenType::Operation(Operation::Add) |
-                        TokenType::Operation(Operation::Sub) |
-                        TokenType::Operation(Operation::Mul) |
-                        TokenType::Operation(Operation::Div) |
-                        TokenType::Operation(Operation::Pow) |
-                        TokenType::Operation(Operation::RightParen) => {},
-                        _ => return Err(SyntaxErr::MissingOp(tokens[i].clone(), tokens[i+1].clone())),
+                        TokenType::Operation(Operation::LeftParen) |
+                        TokenType::Number(_) | TokenType::Ident(_) => return Err(SyntaxErr::MissingOp(tokens[i].clone(), tokens[i+1].clone())),
+                        _ => {},
                     }
                 }
                 instructions.push(Instruction::PushNumber(*num));
@@ -462,7 +449,7 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                 i = pos;
             },
             TokenType::Symbol(Symbol::Assign) => {
-                return Err(SyntaxErr::UnexpectedToken(tokens[i].clone()));
+                return Err(SyntaxErr::AssignInsideOfExpr(tokens[i].clone()));
             },
             TokenType::Keyword(Keyword::Def) => {
                 return Err(SyntaxErr::DefInsideOfExpr(tokens[i].clone()));
@@ -539,7 +526,6 @@ fn apply_op(numbers: &mut Vec<f64>, op: Operation) {
 #[derive(Debug)]
 enum EvalErr {
     ParamsCountDontMatch(String, usize, usize),
-    UnknownArg(String, String),
     UnknownFunction(String),
     RecursiveFunction,
 }
@@ -586,7 +572,7 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                         continue 'outer;
                     }
                 }
-                return Err(EvalErr::UnknownArg(func.ident.clone(), arg.clone()));
+                unreachable!("Error in create_expr()");
             },
             Instruction::FunctionCall(ident, fparams) => {
                 let called_func = match functions.get(ident) {
@@ -665,43 +651,76 @@ fn print_err(input: &str, message: &str, pos: usize) {
 fn syntax_err(input: &str, err: SyntaxErr) {
     match err {
         SyntaxErr::MissingArg(token) => {
-            print_err(&input, &format!("Missing argument for '{:?}'", token.ttype), token.pos);
+            match token.ttype {
+                TokenType::Operation(op) => {
+                    let op_str = match op {
+                        Operation::Add | Operation::UnaryPlus  => "+",
+                        Operation::Sub | Operation::UnaryMinus => "-",
+                        Operation::Mul => "*",
+                        Operation::Div => "/",
+                        Operation::Pow => "^",
+                        Operation::LeftParen  => "(",
+                        Operation::RightParen => ")",
+                    };
+                    print_err(&input, &format!("Missing argument for '{op_str}' operation"), token.pos);
+                },
+                _ => unreachable!("Error in create_expr()"),
+            }
         },
         SyntaxErr::MissingOp(a, b) => {
-            print_err(&input, &format!("Missing operation between '{:?}' and '{:?}'", a.ttype, b.ttype), b.pos-1);
+            let a_str = match a.ttype {
+                TokenType::Operation(Operation::LeftParen)  => "(".to_string(),
+                TokenType::Operation(Operation::RightParen) => ")".to_string(),
+                TokenType::Number(num)  => num.to_string(),
+                TokenType::Ident(ident) => ident,
+                _ => unreachable!("Error in create_expr()"),
+            };
+            let b_str = match b.ttype {
+                TokenType::Operation(Operation::LeftParen)  => "(".to_string(),
+                TokenType::Operation(Operation::RightParen) => ")".to_string(),
+                TokenType::Number(num)  => num.to_string(),
+                TokenType::Ident(ident) => ident,
+                _ => unreachable!("Error in create_expr()"),
+            };
+            print_err(&input, &format!("Missing operation between '{a_str}' and '{b_str}'"), b.pos-1);
         },
         SyntaxErr::MissingRightParen(token) => {
-            print_err(&input, &format!("Missing right paren"), token.pos);
+            print_err(&input, &format!("Missing right parenthesis"), token.pos);
         },
         SyntaxErr::MissingLeftParen(token) => {
-            print_err(&input, &format!("Missing left paren"), token.pos);
+            print_err(&input, &format!("Missing left parenthesis"), token.pos);
         },
         SyntaxErr::EmptyParens(token) => {
             print_err(&input, &format!("Empty parentheses"), token.pos);
         },
-        SyntaxErr::MissingIdent(token) => {
-            print_err(&input, &format!("Missing identifier in function declaration"), token.pos);
+        SyntaxErr::MissingFuncIdent(token) => {
+            print_err(&input, &format!("Missing identifier of a function in definition"), token.pos);
+        },
+        SyntaxErr::MissingArgIdent(token) => {
+            print_err(&input, &format!("Missing function argument in definition"), token.pos);
+        },
+        SyntaxErr::RepeatingArgIdent(token) => {
+            match token.ttype {
+                TokenType::Ident(arg) => {
+                    print_err(&input, &format!("Argument '{arg}' already exists"), token.pos);
+                },
+                _ => unreachable!("Error in create_function()"),
+            }
         },
         SyntaxErr::MissingComma(token) => {
-            print_err(&input, &format!("Missing comma in function declaration"), token.pos);
+            print_err(&input, &format!("Missing comma between arguments in a function definition"), token.pos);
         },
         SyntaxErr::MissingAssign(token) => {
-            print_err(&input, &format!("Missing assign in function declaration"), token.pos);
+            print_err(&input, &format!("Missing assign in a function definition"), token.pos);
         },
         SyntaxErr::MissingFuncBody(token) => {
-            print_err(&input, &format!("Missing body of function in declaration"), token.pos);
+            print_err(&input, &format!("Missing body of a function in definition"), token.pos);
         },
-        SyntaxErr::UnexpectedToken(token) => {
-            print_err(&input, &format!("Unexpected token '{:?}'", token.ttype), token.pos);
+        SyntaxErr::AssignInsideOfExpr(token) => {
+            print_err(&input, &format!("Assigning (=) inside of expression, that allowed only in function definitions"), token.pos);
         },
         SyntaxErr::DefInsideOfExpr(token) => {
-            print_err(&input, &format!("'def' keyword inside of expression"), token.pos);
-        },
-        SyntaxErr::MissingDef => {
-            println!("Missing 'def' keyword at beginning of the function declaration");
-        },
-        SyntaxErr::EmptyExpr=> {
-            println!("Empty expression");
+            print_err(&input, &format!("Trying to define functions inside of expression"), token.pos);
         },
     }
 }
@@ -711,11 +730,8 @@ fn eval_err(err: EvalErr) {
         EvalErr::ParamsCountDontMatch(ident, args_cnt, params_cnt) => {
             println!("[Error]: Function '{ident}' requires {args_cnt} parameters, but found {params_cnt}");
         },
-        EvalErr::UnknownArg(ident, arg) => {
-            println!("[Error]: Function '{ident}' doesn't have argument '{arg}'");
-        },
         EvalErr::UnknownFunction(ident) => {
-            println!("[Error]: Function '{ident}' doesn't defined");
+            println!("[Error]: Function '{ident}' doesn't defined yet");
         },
         EvalErr::RecursiveFunction => {
             println!("[Error]: Recursive functions is not allowed");
@@ -723,6 +739,7 @@ fn eval_err(err: EvalErr) {
     }
 }
 
+// TODO: Update help
 fn usage() {
     println!("Welcome to Daphne, a simple math shell.");
     println!("Usage:");
@@ -744,7 +761,7 @@ fn print_functions(functions: &HashMap::<String, Func>) {
     for func in sorted {
         let ident = func.ident;
         let mut buffer = vec![];
-        write!(&mut buffer, "    {ident}(").unwrap();
+        write!(&mut buffer, "  {ident}(").unwrap();
         for arg in &func.args {
             write!(&mut buffer, "{arg}, ").unwrap();
         }
@@ -754,17 +771,6 @@ fn print_functions(functions: &HashMap::<String, Func>) {
         }
         write!(&mut buffer, ")").unwrap();
         println!("{}", String::from_utf8(buffer).unwrap());
-    }
-}
-
-fn parse_err(input: &str, err: ParseErr) {
-    match err {
-        ParseErr::UnknownWord(pos) => {
-            let end = input[pos..].find(|x: char| x.is_ascii_whitespace())
-                .expect("Input must contain at least \\n at the end");
-            let word = &input[pos..pos+end];
-            print_err(&input, &format!("Unknown word {word}"), pos);
-        },
     }
 }
 
@@ -787,8 +793,8 @@ fn load_file(path: &str) -> Option<Vec<Func>> {
         line.push('\n');
         let tokens = match parse(&line) {
             Ok(tokens) => { tokens },
-            Err(err)   => {
-                parse_err(&line, err);
+            Err((pos, err))   => {
+                print_err(&line, &format!("Unknown symbol in word '{err}'"), pos);
                 return None;
             },
         };
@@ -865,7 +871,7 @@ fn main() -> rustyline::Result<()> {
     let mut rl = DefaultEditor::new()?;
     let mut functions = HashMap::<String, Func>::new();
     loop {
-        let mut input = match rl.readline(" > ") {
+        let mut input = match rl.readline("-> ") {
             Ok(line) => {
                 match rl.add_history_entry(line.as_str()) {
                     Err(err) => println!("[Info]: Can't add entry to history '{err}'"),
@@ -977,17 +983,9 @@ fn main() -> rustyline::Result<()> {
         input.push('\n');
 
         let tokens = match parse(&input) {
-            Ok(tokens) => {
-                println!("[Info]: [");
-                for token in &tokens {
-                    println!("    {:?},", token);
-                }
-                println!("]");
-                println!("[Info]: {} tokens in total", tokens.len());
-                tokens
-            },
-            Err(err)   => {
-                parse_err(&input, err);
+            Ok(tokens) => { tokens },
+            Err((pos, err))   => {
+                print_err(&input, &format!("Unknown symbol in word '{err}'"), pos);
                 continue;
             },
         };
@@ -1003,10 +1001,6 @@ fn main() -> rustyline::Result<()> {
                             Ok(res) => match res.to_lowercase().as_str() {
                                 "y" => {
                                     functions.insert(ident.clone(), func.clone());
-                                    println!("[Info]: added function {ident}({args:?}) = ",args = func.args);
-                                    for instr in &func.expr {
-                                        println!("    {:?},", instr);
-                                    }
                                     println!("  Successfully redefined");
                                 },
                                 _ => {
@@ -1021,22 +1015,12 @@ fn main() -> rustyline::Result<()> {
                         continue;
                     }
                     functions.insert(ident.clone(), func.clone());
-                    println!("[Info]: added function {ident}({args:?}) = ",args = func.args);
-                    for instr in &func.expr {
-                        println!("    {:?},", instr);
-                    }
+                    println!("  Successfully defined");
                 },
                 Err(err) => expr = Err(err),
             }
         } else {
             expr = create_expr(&tokens, &vec![]);
-            if let Ok(ref instructions) = expr {
-                println!("[Info]: instructions");
-                for instr in instructions {
-                    println!("    {:?},", instr);
-                }
-                println!("[Info]: {} instructions in total", instructions.len());
-            }
         }
 
         match expr {
@@ -1048,7 +1032,7 @@ fn main() -> rustyline::Result<()> {
                         expr: instructions,
                     };
                     match evaluate(&functions, &main, &vec![]) {
-                        Ok(res) => println!("=> {res}"),
+                        Ok(res) => println!(" = {res}"),
                         Err(err) => eval_err(err),
                     }
                 }
