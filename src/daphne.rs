@@ -52,8 +52,8 @@ fn is_numeric(ch: char) -> bool {
     ('0'..='9').contains(&ch) || ch == '.'
 }
 
-fn is_latin_letter(ch: char) -> bool {
-    ('a'..='z').contains(&ch) || ('A'..='Z').contains(&ch)
+fn is_valid_ident_char(ch: char) -> bool {
+    ('a'..='z').contains(&ch) || ('A'..='Z').contains(&ch) || ch == '_'
 }
 
 fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
@@ -62,7 +62,7 @@ fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
         None => return false,
     };
     if tokens.len() == 0 { return true; }
-    if !(is_numeric(ch) || is_latin_letter(ch)) {
+    if !(is_numeric(ch) || is_valid_ident_char(ch)) {
         return false;
     }
     match tokens[tokens.len()-1].ttype {
@@ -89,7 +89,7 @@ fn parse_keyword(word: &str) -> Option<Keyword> {
 
 fn is_valid_ident(word: &str) -> bool {
     for c in word.chars() {
-        if is_latin_letter(c) { continue; }
+        if is_valid_ident_char(c) { continue; }
         return false;
     }
     true
@@ -317,7 +317,8 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                     return Err(SyntaxErr::MissingArg(tokens[i].clone()));
                 }
                 match tokens[i+1].ttype {
-                    TokenType::Number(_) | TokenType::Ident(_) => {},
+                    TokenType::Number(_) | TokenType::Ident(_) |
+                    TokenType::Operation(Operation::LeftParen) => {},
                     _ => unreachable!("Probably error in parse()"),
                 }
                 instructions.push(Instruction::PushOp(op.clone()));
