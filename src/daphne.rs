@@ -741,15 +741,40 @@ fn eval_err(err: EvalErr) {
 
 // TODO: Update help
 fn usage() {
-    println!("Welcome to Daphne, a simple math shell.");
     println!("Usage:");
-    println!("  > expr");
+    println!(" -> <expression> | <command>");
     println!();
-    println!("Expr:");
-    println!("  Mathematical expression which consist of <op> and <num>");
-    println!("   <op>  - One of this basic operations: +, -, *, /, ^");
-    println!("   <num> - Arbitrary real number");
+    println!("<expression>:");
+    println!("  Expressions are divided into two types: simple expressions <expr> and function definitions <def>.");
     println!();
+    println!("<expr>:");
+    println!("  Mathematical expression which consist of operations <op>, numbers <num> and function calls <call>.");
+    println!("   <op>   - One of this basic operations: +, -, *, /, ^");
+    println!("   <num>  - Arbitrary real number");
+    println!("   <call> - Call of the defined function. Function call have the next syntax:");
+    println!("     <ident>(<params>) - Where <ident> is the name of the function and <params> is the list of parameters separated by comma. Parameters can be just numbers <num> or expressions <expr>.");
+    println!();
+    println!("<def>:");
+    println!("  def <ident>(<args>) = <expr>");
+    println!();
+    println!("<ident> | <arg>:");
+    println!("  Names of functions and their arguments may consist of latin latters(A-Z|a-z) and underscore(_).");
+    println!();
+    println!("<command>:");
+    println!("  help        - Prints this message");
+    println!("  list        - Prints list of defined functions");
+    println!("  exit        - Exits the program");
+    println!("  save <path> - Saves all defined functions into file");
+    println!("  load <path> - Loads functions from provided file");
+    println!();
+}
+
+fn welcome() {
+    println!("   ^ ^                       ");
+    println!("  (O,O) Welcome to Daphne,   ");
+    println!("  (   ) a simple math shell. ");
+    println!(" --\"-\"------------------------------------------------");
+    println!("(If you don't know where to start, type command 'help')")
 }
 
 fn print_functions(functions: &HashMap::<String, Func>) {
@@ -867,7 +892,7 @@ fn save_expr(file: &mut File, expr: &Vec<Instruction>) -> std::io::Result<()> {
 }
 
 fn main() -> rustyline::Result<()> {
-    usage();
+    welcome();
     let mut rl = DefaultEditor::new()?;
     let mut functions = HashMap::<String, Func>::new();
     loop {
