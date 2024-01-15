@@ -1,8 +1,11 @@
-use std::io::{Write, Read};
 use std::fs::File;
 use std::collections::HashMap;
 use terminal_size::terminal_size;
 use rustyline::DefaultEditor;
+use termion::event::Key;
+use termion::input::TermRead;
+use termion::raw::IntoRawMode;
+use std::io::{Write, Read, stdout, stdin};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Operation {
@@ -1013,12 +1016,17 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                 println!("[Error]: Unknown argument '{arg}' for command 'plot'");
                 return true;
             }
-            if let Some((_, func)) = state.functions.iter().find(|(_, f)| f.ident == ident) {
-                print_plot(&state.functions, &func);
-                return true;
+            let func = state.functions.iter().find(|(_, f)| f.ident == ident);
+            match func {
+                Some((_, func)) => {
+                    plot_mode(state, &func.clone(), -5.0, 5.0, -5.0, 5.0);
+                    return true;
+                },
+                None => {
+                    println!("[Error]: Function with the name '{ident}' is not defined yet");
+                    return true;
+                }
             }
-            println!("[Error]: Function with the name '{ident}' is not defined yet");
-            return true;
         },
         _ => return false,
     }
@@ -1069,41 +1077,172 @@ fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Ins
     }
 }
 
-fn print_plot(functions: &HashMap<String, Func>, function: &Func) {
-    let (twidth, theight) = match terminal_size() {
+fn plot_mode(state: &mut State, function: &Func,
+    mut xmin: f64, mut xmax: f64, mut ymin: f64, mut ymax: f64) {
+    let stdin = stdin();
+    let mut stdout = match stdout().into_raw_mode() {
+        Ok(stdout) => stdout,
+        Err(_err) => todo!(),
+    };
+    write!(stdout, "{}{}{}",
+        termion::clear::All,
+        termion::cursor::Goto(1, 1),
+        termion::cursor::Hide).unwrap();
+    print_plot(&state.functions, &function, xmin, xmax, ymin, ymax);
+    stdout.flush().unwrap();
+    let (mut twidth, mut theight) = match terminal_size() {
         Some((terminal_size::Width(twidth), terminal_size::Height(theight))) => (twidth as usize, theight as usize),
         None => {
             println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
             (DEFAULT_TERM_WIDTH as usize, DEFAULT_TERM_HEIGHT as usize)
         },
     };
-    const MIN_X: f64 = -5.0;
-    const MAX_X: f64 =  5.0;
-    const MIN_Y: f64 = -5.0;
-    const MAX_Y: f64 =  5.0;
-    let mut plot: Vec<Vec<char>> = vec![vec!['·'; twidth]; theight];
-    plot[theight/2] = vec!['-'; twidth];
-    let xstep = (MAX_X-MIN_X)/(twidth-1) as f64;
-    let mut x = MIN_X;
-    while x <= MAX_X {
+
+    for c in stdin.keys() {
+        let xstep = (xmax-xmin)/(twidth-2) as f64 * 2.0;
+        let ystep = (ymax-ymin)/(theight-3) as f64 * 2.0;
+        write!(stdout,
+               "{}{}",
+               termion::cursor::Goto(1, 1),
+               termion::clear::All)
+                .unwrap();
+        let c = match c {
+            Ok(c) => c,
+            Err(err) => {
+                if Some(4) == err.raw_os_error() {
+                    print_plot(&state.functions, &function, xmin, xmax, ymin, ymax);
+                    stdout.flush().unwrap();
+                    (twidth, theight) = match terminal_size() {
+                        Some((terminal_size::Width(twidth), terminal_size::Height(theight))) => (twidth as usize, theight as usize),
+                        None => {
+                            println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
+                            (DEFAULT_TERM_WIDTH as usize, DEFAULT_TERM_HEIGHT as usize)
+                        },
+                    };
+                    continue;
+                }
+                println!("[Error]: {err}. Press any button to continue.");
+                continue;
+            },
+        };
+        match c {
+            Key::Char('q') => break,
+            Key::Char('+') => {
+                xmin += xstep;
+                xmax -= xstep;
+                ymin += ystep;
+                ymax -= ystep;
+                if xmin >= xmax {
+                    xmin -= xstep;
+                    xmax += xstep;
+                }
+                if ymin >= ymax {
+                    ymin -= ystep;
+                    ymax += ystep;
+                }
+            },
+            Key::Char('-') => {
+                xmin -= xstep;
+                xmax += xstep;
+                ymin -= ystep;
+                ymax += ystep;
+                if xmin >= xmax {
+                    xmin -= xstep;
+                    xmax += xstep;
+                }
+                if ymin >= ymax {
+                    ymin -= ystep;
+                    ymax += ystep;
+                }
+            },
+            Key::Left => {
+                xmin -= xstep;
+                xmax -= xstep;
+            },
+            Key::Right => {
+                xmin += xstep;
+                xmax += xstep;
+            },
+            Key::Up => {
+                ymin += ystep;
+                ymax += ystep;
+            },
+            Key::Down => {
+                ymin -= ystep;
+                ymax -= ystep;
+            },
+            _ => {}
+        }
+        print_plot(&state.functions, &function, xmin, xmax, ymin, ymax);
+        stdout.flush().unwrap();
+    }
+
+    write!(stdout, "{}{}",
+        termion::clear::All,
+        termion::cursor::Show).unwrap();
+    stdout.flush().unwrap();
+}
+
+fn print_plot(functions: &HashMap<String, Func>, function: &Func,
+    xmin: f64, xmax: f64, ymin: f64, ymax: f64) {
+    let (twidth, theight) = match terminal_size() {
+        Some((terminal_size::Width(twidth), terminal_size::Height(theight))) => (twidth as usize, theight as usize - 1),
+        None => {
+            println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
+            (DEFAULT_TERM_WIDTH as usize, DEFAULT_TERM_HEIGHT as usize)
+        },
+    };
+
+    let mut plot = vec!['·'; twidth*theight];
+    for i in 0..twidth {
+        plot[theight/2*twidth+i] = '─';
+        plot[i] = '─';
+        plot[(theight-1)*twidth+i] = '─';
+    }
+    for i in 0..theight {
+        plot[twidth*i+twidth/2] = '│';
+        plot[twidth*i] = '│';
+        plot[twidth*i+twidth-1] = '│';
+    }
+    plot[0] = '╭';
+    plot[twidth-1] = '╮';
+    plot[twidth*(theight-1)] = '╰';
+    plot[twidth*theight-1] = '╯';
+    plot[twidth/2] = '┬';
+    plot[twidth*(theight-1)+twidth/2] = '┴';
+    plot[theight/2*twidth] = '├';
+    plot[theight/2*twidth+twidth-1] = '┤';
+    plot[theight/2*twidth+twidth/2] = '┼';
+
+    print!("{}{}{}", termion::color::Fg(termion::color::Rgb(110, 115, 141)),
+        plot.iter().collect::<String>(),
+        termion::style::Reset);
+
+    let xstep = (xmax-xmin)/(twidth-2) as f64;
+    let mut x = xmin;
+    while x <= xmax {
         match evaluate(&functions, function, &vec![x]) {
             Ok(y) => {
-                if y.is_nan() || y > MAX_Y || y < MIN_Y {
+                if y.is_nan() || y > ymax || y < ymin {
                     x += xstep;
                     continue;
                 }
-                let x = ((x - MIN_X) / (MAX_X-MIN_X) * (twidth-1) as f64) as usize;
-                let y = ((y - MIN_Y) / (MAX_Y-MIN_Y) * (theight-1) as f64) as usize;
-                let y = (theight-1)-y;
-                plot[y][x] = '•';
+                let x = ((x - xmin) / (xmax-xmin) * (twidth-2) as f64) as usize;
+                let y = ((y - ymin) / (ymax-ymin) * (theight-2) as f64) as usize;
+                let y = (theight-2)-y;
+                let x = x + 1;
+                print!("{}•", termion::cursor::Goto(x as u16 + 1, y as u16 + 1));
             },
             Err(_err) => todo!(),
         }
         x += xstep;
     }
-    for i in 0..theight {
-        println!("{}", plot[i].iter().collect::<String>());
-    }
+    let x = (twidth as f64 / 2.0) / twidth as f64 * (xmax-xmin) + xmin;
+    let y = match evaluate(&functions, function, &vec![x]) {
+        Ok(y) => y,
+        Err(_err) => todo!(),
+    };
+    print!("{}x = {x:.2}, y = {y:.2}", termion::cursor::Goto(1, theight as u16 + 1));
 }
 
 // TODO: Add README.md

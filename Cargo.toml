@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 rustyline = "13.0.0"
 terminal_size = "0.3.0"
+termion = "3.0.0"
 
 [[bin]]
 name = "daphne"
