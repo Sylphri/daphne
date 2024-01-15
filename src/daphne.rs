@@ -65,7 +65,7 @@ fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
     }
     match tokens[tokens.len()-1].ttype {
         TokenType::Operation(Operation::RightParen) => false,
-        TokenType::Operation(_) => true,
+        TokenType::Operation(_) | TokenType::Symbol(Symbol::Assign)=> true,
         _ => false,
     }
 }
@@ -612,9 +612,10 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
     Ok(numbers.pop().unwrap())
 }
 
+const DEFAULT_TERM_WIDTH: u16 = 50;
+const DEFAULT_TERM_HEIGHT: u16 = 50;
+
 fn print_err(input: &str, message: &str, pos: usize) {
-    const DEFAULT_TERM_WIDTH: u16 = 50;
-    const DEFAULT_TERM_HEIGHT: u16 = 50;
     let (terminal_size::Width(twidth), _) = match terminal_size() {
         Some(tsize) => tsize,
         None => {
@@ -1000,6 +1001,25 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             }
             return true;
         },
+        "plot" => {
+            let ident = match args.next() {
+                Some(arg) => arg,
+                None => {
+                    println!("[Error]: Missing argument 'ident' for command 'plot'");
+                    return true;
+                },
+            };
+            if let Some(arg) = args.next() {
+                println!("[Error]: Unknown argument '{arg}' for command 'plot'");
+                return true;
+            }
+            if let Some((_, func)) = state.functions.iter().find(|(_, f)| f.ident == ident) {
+                print_plot(&state.functions, &func);
+                return true;
+            }
+            println!("[Error]: Function with the name '{ident}' is not defined yet");
+            return true;
+        },
         _ => return false,
     }
 }
@@ -1049,14 +1069,51 @@ fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Ins
     }
 }
 
+fn print_plot(functions: &HashMap<String, Func>, function: &Func) {
+    let (twidth, theight) = match terminal_size() {
+        Some((terminal_size::Width(twidth), terminal_size::Height(theight))) => (twidth as usize, theight as usize),
+        None => {
+            println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
+            (DEFAULT_TERM_WIDTH as usize, DEFAULT_TERM_HEIGHT as usize)
+        },
+    };
+    const MIN_X: f64 = -5.0;
+    const MAX_X: f64 =  5.0;
+    const MIN_Y: f64 = -5.0;
+    const MAX_Y: f64 =  5.0;
+    let mut plot: Vec<Vec<char>> = vec![vec!['·'; twidth]; theight];
+    plot[theight/2] = vec!['-'; twidth];
+    let xstep = (MAX_X-MIN_X)/(twidth-1) as f64;
+    let mut x = MIN_X;
+    while x <= MAX_X {
+        match evaluate(&functions, function, &vec![x]) {
+            Ok(y) => {
+                if y.is_nan() || y > MAX_Y || y < MIN_Y {
+                    x += xstep;
+                    continue;
+                }
+                let x = ((x - MIN_X) / (MAX_X-MIN_X) * (twidth-1) as f64) as usize;
+                let y = ((y - MIN_Y) / (MAX_Y-MIN_Y) * (theight-1) as f64) as usize;
+                let y = (theight-1)-y;
+                plot[y][x] = '•';
+            },
+            Err(_err) => todo!(),
+        }
+        x += xstep;
+    }
+    for i in 0..theight {
+        println!("{}", plot[i].iter().collect::<String>());
+    }
+}
+
+// TODO: Add README.md
 fn main() -> rustyline::Result<()> {
-    welcome();
     let mut state = State {
         quit: false,
         functions: HashMap::<String, Func>::new(),
         rl: DefaultEditor::new()?,
     };
-
+    welcome();
     while !state.quit {
         let mut input = match readline(&mut state) {
             Some(input) => input,
