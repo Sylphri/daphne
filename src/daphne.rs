@@ -630,16 +630,8 @@ fn print_err(input: &str, message: &str, pos: usize) {
         println!(" ::  {}", String::from_utf8(pt).expect("Error in pointer string"));
     } else {
         let width = ((twidth-8)/2) as usize;
-        let begin = if width <= pos {
-            pos - width
-        } else {
-            0
-        };
-        let end = if width+pos < input.len() {
-            width+pos
-        } else {
-            input.len()-1
-        };
+        let begin = if width <= pos { pos - width } else { 0 };
+        let end = if width+pos < input.len() { width+pos } else { input.len()-1 };
         let input = &input[begin..end];
         println!(" ::  ... {input} ...");
         let mut pt = vec![b'-'; end-begin];
@@ -739,7 +731,6 @@ fn eval_err(err: EvalErr) {
     }
 }
 
-// TODO: Update help
 fn usage() {
     println!("Usage:");
     println!(" -> <expression> | <command>");
@@ -891,122 +882,193 @@ fn save_expr(file: &mut File, expr: &Vec<Instruction>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn main() -> rustyline::Result<()> {
-    welcome();
-    let mut rl = DefaultEditor::new()?;
-    let mut functions = HashMap::<String, Func>::new();
-    loop {
-        let mut input = match rl.readline("-> ") {
-            Ok(line) => {
-                match rl.add_history_entry(line.as_str()) {
-                    Err(err) => println!("[Info]: Can't add entry to history '{err}'"),
-                    Ok(_) => {},
-                }
-                line
-            },
-            Err(err) => {
-                println!("{err}");
-                break;
+struct State {
+    quit: bool,
+    functions: HashMap<String, Func>,
+    rl: DefaultEditor,
+}
+
+fn readline(state: &mut State) -> Option<String> {
+    let input = match state.rl.readline("-> ") {
+        Ok(line) => {
+            match state.rl.add_history_entry(line.as_str()) {
+                Err(err) => println!("[Info]: Can't add entry to history '{err}'"),
+                Ok(_) => {},
             }
-        };
-        let command = match input.split_ascii_whitespace().next() {
-            Some(command) => command,
-            None => continue,
-        };
-        let mut args = input.split_ascii_whitespace().skip(1);
-        match command {
-            "exit" => {
-                if let Some(arg) = args.next() {
-                    println!("[Error]: Unknown argument '{arg}' for command 'exit'");
-                    continue;
+            line
+        },
+        Err(err) => {
+            println!("{err}");
+            state.quit = true;
+            return None;
+        }
+    };
+    Some(input)
+}
+
+fn exec_command(state: &mut State, input: &str) -> bool {
+    let command = input.split_ascii_whitespace().next().expect("There must be at least a command in input");
+    let mut args = input.split_ascii_whitespace().skip(1);
+    match command {
+        "exit" => {
+            if let Some(arg) = args.next() {
+                println!("[Error]: Unknown argument '{arg}' for command 'exit'");
+                return true;
+            }
+            state.quit = true;
+            return true;
+        },
+        "list" => {
+            if let Some(arg) = args.next() {
+                println!("[Error]: Unknown argument '{arg}' for command 'list'");
+                return true;
+            }
+            print_functions(&state.functions);
+            return true;
+        },
+        "help" => {
+            if let Some(arg) = args.next() {
+                println!("[Error]: Unknown argument '{arg}' for command 'help'");
+                return true;
+            }
+            usage();
+            return true;
+        },
+        "load" => {
+            let path = match args.next() {
+                Some(arg) => arg,
+                None => {
+                    println!("[Error]: Missing argument 'path' for command 'load'");
+                    return true;
+                },
+            };
+            if let Some(arg) = args.next() {
+                println!("[Error]: Unknown argument '{arg}' for command 'load'");
+                return true;
+            }
+            let funcs = match load_file(path) {
+                Some(functions) => functions,
+                None => return true,
+            };
+            let mut count = 0;
+            for func in &funcs {
+                if state.functions.contains_key(&func.ident) {
+                    count += 1;
                 }
-                break
-            },
-            "list" => {
-                if let Some(arg) = args.next() {
-                    println!("[Error]: Unknown argument '{arg}' for command 'list'");
-                    continue;
-                }
-                print_functions(&functions);
-                continue;
-            },
-            "help" => {
-                if let Some(arg) = args.next() {
-                    println!("[Error]: Unknown argument '{arg}' for command 'help'");
-                    continue;
-                }
-                usage();
-                continue;
-            },
-            "load" => {
-                let path = match args.next() {
-                    Some(arg) => arg,
-                    None => {
-                        println!("[Error]: Missing argument 'path' for command 'load'");
-                        continue;
+            }
+            if count > 0 {
+                match state.rl.readline(format!("Loading of this file will redefine some functions ({count}). Do you want to continue? (y/n): ").as_str()) {
+                    Ok(res) => match res.to_lowercase().as_str() {
+                        "y" => {
+                            for func in &funcs {
+                                state.functions.insert(func.ident.clone(), func.clone());
+                            }
+                            println!("  Successfully redefined");
+                        },
+                        _ => {
+                            println!("  Cancelled");
+                            return true;
+                        }
                     },
-                };
-                if let Some(arg) = args.next() {
-                    println!("[Error]: Unknown argument '{arg}' for command 'load'");
-                    continue;
-                }
-                let funcs = match load_file(path) {
-                    Some(functions) => functions,
-                    None => continue,
-                };
-                let mut count = 0;
-                for func in &funcs {
-                    if functions.contains_key(&func.ident) {
-                        count += 1;
+                    Err(err) => {
+                        println!("{err}");
+                        state.quit = true;
+                        return true;
                     }
                 }
-                if count > 0 {
-                    match rl.readline(format!("Loading of this file will redefine some functions ({count}). Do you want to continue? (y/n): ").as_str()) {
+            }
+            for func in funcs {
+                state.functions.insert(func.ident.clone(), func);
+            }
+            return true;
+        },
+        "save" => {
+            let path = match args.next() {
+                Some(arg) => arg,
+                None => {
+                    println!("[Error]: Missing argument 'path' for command 'save'");
+                    return true;
+                },
+            };
+            if let Some(arg) = args.next() {
+                println!("[Error]: Unknown argument '{arg}' for command 'save'");
+                return true;
+            }
+            if let Err(err) = save_file(&state.functions, &path) {
+                println!("[Error]: Can't save functions in a file '{path}': {err}");
+                return true;
+            }
+            return true;
+        },
+        _ => return false,
+    }
+}
+
+fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Instruction>> {
+    let is_def = tokens.len() > 0 && tokens[0].ttype == TokenType::Keyword(Keyword::Def);
+    if is_def {
+        match create_function(&tokens) {
+            Ok(func) => {
+                let ident = func.ident.clone();
+                if state.functions.contains_key(&ident) {
+                    match state.rl.readline(format!("Function '{ident}' already exist, want to redefine? (y/n): ").as_str()) {
                         Ok(res) => match res.to_lowercase().as_str() {
                             "y" => {
-                                for func in &funcs {
-                                    functions.insert(func.ident.clone(), func.clone());
-                                }
+                                state.functions.insert(ident.clone(), func.clone());
                                 println!("  Successfully redefined");
                             },
                             _ => {
                                 println!("  Cancelled");
-                                continue;
                             }
                         },
                         Err(err) => {
                             println!("{err}");
-                            break;
+                            state.quit = true;
+                            return None;
                         }
                     }
+                    return None;
                 }
-                for func in funcs {
-                    functions.insert(func.ident.clone(), func);
-                }
-                continue;
+                state.functions.insert(ident.clone(), func.clone());
+                println!("  Successfully defined");
+                return None;
             },
-            "save" => {
-                let path = match args.next() {
-                    Some(arg) => arg,
-                    None => {
-                        println!("[Error]: Missing argument 'path' for command 'save'");
-                        continue;
-                    },
-                };
-                if let Some(arg) = args.next() {
-                    println!("[Error]: Unknown argument '{arg}' for command 'save'");
-                    continue;
-                }
-                if let Err(err) = save_file(&functions, &path) {
-                    println!("[Error]: Can't save functions in a file '{path}': {err}");
-                    continue;
-                }
-                continue;
+            Err(err) => {
+                syntax_err(&input, err);
+                return None;
             },
-            _ => {},
+        }
+    } else {
+        match create_expr(&tokens, &vec![]) {
+            Ok(expr) => return Some(expr),
+            Err(err) => {
+                syntax_err(&input, err);
+                return None;
+            }
+        }
+    }
+}
+
+fn main() -> rustyline::Result<()> {
+    welcome();
+    let mut state = State {
+        quit: false,
+        functions: HashMap::<String, Func>::new(),
+        rl: DefaultEditor::new()?,
+    };
+
+    while !state.quit {
+        let mut input = match readline(&mut state) {
+            Some(input) => input,
+            None => continue,
+        };
+        if let None =  input.split_ascii_whitespace().next() {
+            continue;
+        }
+        if exec_command(&mut state, &input) {
+            continue;
         }
         input.push('\n');
-
         let tokens = match parse(&input) {
             Ok(tokens) => { tokens },
             Err((pos, err))   => {
@@ -1014,55 +1076,19 @@ fn main() -> rustyline::Result<()> {
                 continue;
             },
         };
-
-        let is_def = tokens.len() > 0 && tokens[0].ttype == TokenType::Keyword(Keyword::Def);
-        let mut expr = Ok(vec![]);
-        if is_def {
-            match create_function(&tokens) {
-                Ok(func) => {
-                    let ident = func.ident.clone();
-                    if functions.contains_key(&ident) {
-                        match rl.readline(format!("Function '{ident}' already exist, want to redefine? (y/n): ").as_str()) {
-                            Ok(res) => match res.to_lowercase().as_str() {
-                                "y" => {
-                                    functions.insert(ident.clone(), func.clone());
-                                    println!("  Successfully redefined");
-                                },
-                                _ => {
-                                    println!("  Cancelled");
-                                }
-                            },
-                            Err(err) => {
-                                println!("{err}");
-                                break;
-                            }
-                        }
-                        continue;
-                    }
-                    functions.insert(ident.clone(), func.clone());
-                    println!("  Successfully defined");
-                },
-                Err(err) => expr = Err(err),
-            }
-        } else {
-            expr = create_expr(&tokens, &vec![]);
-        }
-
-        match expr {
-            Ok(instructions) => {
-                if !is_def {
-                    let main = Func {
-                        ident: "main".to_string(),
-                        args: vec![],
-                        expr: instructions,
-                    };
-                    match evaluate(&functions, &main, &vec![]) {
-                        Ok(res) => println!(" = {res}"),
-                        Err(err) => eval_err(err),
-                    }
+        match create(&mut state, &tokens, &input) {
+            Some(instructions) => {
+                let main = Func {
+                    ident: "main".to_string(),
+                    args: vec![],
+                    expr: instructions,
+                };
+                match evaluate(&state.functions, &main, &vec![]) {
+                    Ok(res) => println!(" = {res}"),
+                    Err(err) => eval_err(err),
                 }
             },
-            Err(err) => syntax_err(&input, err),
+            None => continue,
         }
     }
     Ok(())
