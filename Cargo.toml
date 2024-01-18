@@ -6,9 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+crossterm = "0.27.0"
 rustyline = "13.0.0"
-terminal_size = "0.3.0"
-termion = "3.0.0"
 
 [[bin]]
 name = "daphne"

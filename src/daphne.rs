@@ -1,11 +1,11 @@
-use std::fs::File;
 use std::collections::HashMap;
-use terminal_size::terminal_size;
+use std::fs::File;
+use std::io::{Write, Read, stdout};
 use rustyline::DefaultEditor;
-use termion::event::Key;
-use termion::input::TermRead;
-use termion::raw::IntoRawMode;
-use std::io::{Write, Read, stdout, stdin};
+use crossterm::{execute, terminal, cursor};
+use crossterm::event::{read, Event, KeyEventKind, KeyCode};
+use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Operation {
@@ -68,7 +68,9 @@ fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
     }
     match tokens[tokens.len()-1].ttype {
         TokenType::Operation(Operation::RightParen) => false,
-        TokenType::Operation(_) | TokenType::Symbol(Symbol::Assign)=> true,
+        TokenType::Operation(_)           |
+        TokenType::Symbol(Symbol::Comma)  |
+        TokenType::Symbol(Symbol::Assign) => true,
         _ => false,
     }
 }
@@ -778,13 +780,7 @@ const DEFAULT_TERM_WIDTH: u16 = 50;
 const DEFAULT_TERM_HEIGHT: u16 = 50;
 
 fn print_err(input: &str, message: &str, pos: usize) {
-    let (terminal_size::Width(twidth), _) = match terminal_size() {
-        Some(tsize) => tsize,
-        None => {
-            println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
-            (terminal_size::Width(DEFAULT_TERM_WIDTH), terminal_size::Height(DEFAULT_TERM_HEIGHT))
-        },
-    };
+    let (twidth, _) = terminal_size();
     println!("[Error]: {message}");
     if input.len() < twidth as usize - 6 {
         print!(" ::  {input}");
@@ -1217,13 +1213,19 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                     args: vec!["x".to_string()],
                     expr: vec![Instruction::BuiltinCall(ident.to_string(), vec![vec![Instruction::PushArg("x".to_string())]])],
                 };
-                plot_mode(state, &builtin, -5.0, 5.0, -5.0, 5.0);
+                match plot_mode(state, &builtin, -5.0, 5.0, -5.0, 5.0) {
+                    Err(err) => println!("[Error]: {err}"),
+                    Ok(()) => {},
+                }
                 return true;
             }
             let func = state.functions.iter().find(|(_, f)| f.ident == ident);
             match func {
                 Some((_, func)) => {
-                    plot_mode(state, &func.clone(), -5.0, 5.0, -5.0, 5.0);
+                    match plot_mode(state, &func.clone(), -5.0, 5.0, -5.0, 5.0) {
+                        Err(err) => println!("[Error]: {err}"),
+                        Ok(()) => {},
+                    }
                     return true;
                 },
                 None => {
@@ -1285,120 +1287,104 @@ fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Ins
     }
 }
 
-fn plot_mode(state: &mut State, function: &Func, mut xmin: f64, mut xmax: f64, mut ymin: f64, mut ymax: f64) {
-    let stdin = stdin();
-    let mut stdout = match stdout().into_raw_mode() {
-        Ok(stdout) => stdout,
-        Err(_err) => todo!(),
-    };
-    write!(stdout, "{}{}{}",
-        termion::clear::All,
-        termion::cursor::Goto(1, 1),
-        termion::cursor::Hide).unwrap();
-    print_plot(&state.functions, &function, xmin, xmax, ymin, ymax);
-    stdout.flush().unwrap();
-    let (mut twidth, mut theight) = match terminal_size() {
-        Some((terminal_size::Width(twidth), terminal_size::Height(theight))) => (twidth as usize, theight as usize),
-        None => {
-            println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
-            (DEFAULT_TERM_WIDTH as usize, DEFAULT_TERM_HEIGHT as usize)
+fn terminal_size() -> (u16, u16) {
+    match terminal::size() {
+        Ok((twidth, theight)) => (twidth, theight),
+        Err(err) => {
+            println!("[Error]: Can't get the width of the terminal, formatting may be screwed: {err}");
+            (DEFAULT_TERM_WIDTH, DEFAULT_TERM_HEIGHT)
         },
-    };
+    }
+}
 
-    for c in stdin.keys() {
+fn plot_mode(state: &mut State, function: &Func, mut xmin: f64, mut xmax: f64, mut ymin: f64, mut ymax: f64) -> std::io::Result<()> {
+    let mut stdout = stdout();
+    enable_raw_mode()?;
+    execute!(
+        stdout,
+        terminal::Clear(terminal::ClearType::All),
+        cursor::MoveTo(0, 0),
+        cursor::Hide,
+    )?;
+
+    print_plot(&state.functions, &function, xmin, xmax, ymin, ymax)?;
+    loop {
+        let (twidth, theight) = terminal_size();
         let xstep = (xmax-xmin)/(twidth-2) as f64 * 2.0;
         let ystep = (ymax-ymin)/(theight-3) as f64 * 2.0;
-        write!(stdout,
-               "{}{}",
-               termion::cursor::Goto(1, 1),
-               termion::clear::All)
-                .unwrap();
-        let c = match c {
-            Ok(c) => c,
-            Err(err) => {
-                if Some(4) == err.raw_os_error() {
-                    print_plot(&state.functions, &function, xmin, xmax, ymin, ymax);
-                    stdout.flush().unwrap();
-                    (twidth, theight) = match terminal_size() {
-                        Some((terminal_size::Width(twidth), terminal_size::Height(theight))) => (twidth as usize, theight as usize),
-                        None => {
-                            println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
-                            (DEFAULT_TERM_WIDTH as usize, DEFAULT_TERM_HEIGHT as usize)
+        let event = read().unwrap();
+        match event {
+            Event::Key(event) => {
+                if event.kind == KeyEventKind::Press {
+                    match event.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Left => {
+                            xmin -= xstep;
+                            xmax -= xstep;
                         },
-                    };
-                    continue;
+                        KeyCode::Right => {
+                            xmin += xstep;
+                            xmax += xstep;
+                        },
+                        KeyCode::Up => {
+                            ymin += ystep/2.0;
+                            ymax += ystep/2.0;
+                        },
+                        KeyCode::Down => {
+                            ymin -= ystep/2.0;
+                            ymax -= ystep/2.0;
+                        },
+                        KeyCode::Char('+') => {
+                            xmin += xstep;
+                            xmax -= xstep;
+                            ymin += ystep/2.0;
+                            ymax -= ystep/2.0;
+                            if xmin >= xmax {
+                                xmin -= xstep;
+                                xmax += xstep;
+                            }
+                            if ymin >= ymax {
+                                ymin -= ystep/2.0;
+                                ymax += ystep/2.0;
+                            }
+                        },
+                        KeyCode::Char('-') => {
+                            xmin -= xstep;
+                            xmax += xstep;
+                            ymin -= ystep/2.0;
+                            ymax += ystep/2.0;
+                            if xmin >= xmax {
+                                xmin -= xstep;
+                                xmax += xstep;
+                            }
+                            if ymin >= ymax {
+                                ymin -= ystep/2.0;
+                                ymax += ystep/2.0;
+                            }
+                        },
+                        _ => {},
+                    }
                 }
-                println!("[Error]: {err}. Press any button to continue.");
-                continue;
             },
-        };
-        match c {
-            Key::Char('q') => break,
-            Key::Char('+') => {
-                xmin += xstep;
-                xmax -= xstep;
-                ymin += ystep/2.0;
-                ymax -= ystep/2.0;
-                if xmin >= xmax {
-                    xmin -= xstep;
-                    xmax += xstep;
-                }
-                if ymin >= ymax {
-                    ymin -= ystep/2.0;
-                    ymax += ystep/2.0;
-                }
-            },
-            Key::Char('-') => {
-                xmin -= xstep;
-                xmax += xstep;
-                ymin -= ystep/2.0;
-                ymax += ystep/2.0;
-                if xmin >= xmax {
-                    xmin -= xstep;
-                    xmax += xstep;
-                }
-                if ymin >= ymax {
-                    ymin -= ystep/2.0;
-                    ymax += ystep/2.0;
-                }
-            },
-            Key::Left => {
-                xmin -= xstep;
-                xmax -= xstep;
-            },
-            Key::Right => {
-                xmin += xstep;
-                xmax += xstep;
-            },
-            Key::Up => {
-                ymin += ystep/2.0;
-                ymax += ystep/2.0;
-            },
-            Key::Down => {
-                ymin -= ystep/2.0;
-                ymax -= ystep/2.0;
-            },
-            _ => {}
+            _ => {},
         }
-        print_plot(&state.functions, &function, xmin, xmax, ymin, ymax);
-        stdout.flush().unwrap();
+        execute!(
+            stdout,
+            terminal::Clear(terminal::ClearType::All),
+            cursor::MoveTo(0, 0),
+        )?;
+        print_plot(&state.functions, &function, xmin, xmax, ymin, ymax)?;
     }
-
-    write!(stdout, "{}{}",
-        termion::clear::All,
-        termion::cursor::Show).unwrap();
-    stdout.flush().unwrap();
+    execute!(stdout, cursor::Show)?;
+    disable_raw_mode()?;
+    Ok(())
 }
 
 fn print_plot(functions: &HashMap<String, Func>, function: &Func,
-    xmin: f64, xmax: f64, ymin: f64, ymax: f64) {
-    let (twidth, theight) = match terminal_size() {
-        Some((terminal_size::Width(twidth), terminal_size::Height(theight))) => (twidth as usize, theight as usize - 1),
-        None => {
-            println!("[Error]: Can't get the width of the terminal, formatting may be screwed");
-            (DEFAULT_TERM_WIDTH as usize, DEFAULT_TERM_HEIGHT as usize)
-        },
-    };
+    xmin: f64, xmax: f64, ymin: f64, ymax: f64) -> std::io::Result<()> {
+    let (twidth, theight) = terminal_size();
+    let theight = (theight - 1) as usize;
+    let twidth = twidth as usize;
 
     let mut plot = vec!['·'; twidth*theight];
     for i in 0..twidth {
@@ -1421,16 +1407,21 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func,
     plot[theight/2*twidth+twidth-1] = '┤';
     plot[theight/2*twidth+twidth/2] = '┼';
 
-    print!("{}{}{}", termion::color::Fg(termion::color::Rgb(110, 115, 141)),
-        plot.iter().collect::<String>(),
-        termion::style::Reset);
+    let mut stdout = stdout();
+    execute!(
+        stdout,
+        SetForegroundColor(Color::Rgb{r: 110, g: 115, b: 141}),
+        Print(plot.iter().collect::<String>()),
+        ResetColor
+    )?;
 
     let xstep = (xmax-xmin)/(twidth-2) as f64;
+    let ystep = (ymax-ymin)/(theight-2) as f64;
     let mut x = xmin;
-    while x <= xmax {
+    while x <= xmax - xstep {
         match evaluate(&functions, function, &vec![x]) {
             Ok(y) => {
-                if y.is_nan() || y > ymax || y < ymin {
+                if y.is_nan() || y > ymax - ystep || y < ymin {
                     x += xstep;
                     continue;
                 }
@@ -1438,11 +1429,15 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func,
                 let y = ((y - ymin) / (ymax-ymin) * (theight-2) as f64).round() as usize;
                 let y = (theight-2)-y;
                 let x = x + 1;
-                print!("{}•", termion::cursor::Goto(x as u16 + 1, y as u16 + 1));
+                execute!(
+                    stdout,
+                    cursor::MoveTo(x as u16, y as u16),
+                    Print('•'),
+                )?;
             },
             Err(err) => {
                 eval_err(err);
-                return;
+                return Ok(());
             },
         }
         x += xstep;
@@ -1452,7 +1447,12 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func,
         Ok(y) => y,
         Err(_err) => todo!(),
     };
-    print!("{}x = {x:.2}, y = {y:.2}", termion::cursor::Goto(1, theight as u16 + 1));
+    execute!(
+        stdout,
+        cursor::MoveTo(0, theight as u16 + 1),
+        Print(format!("x = {x:.2}, y = {y:.2}")),
+    )?;
+    Ok(())
 }
 
 // TODO: Add README.md
