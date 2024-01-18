@@ -1,0 +1,9 @@
+def cot(x) = cos(x)/sin(x)
+def sqrt(x) = x^0.5
+def Pi() = 3.141592653589793
+def degToRad(a) = a*Pi()/180
+def radToDeg(a) = a*180/Pi()
+def exp(x) = E()^x
+def E() = 2.718281828459045
+def log(b, x) = ln(x)/ln(b)
+def cbrt(x) = x^(1/3)
