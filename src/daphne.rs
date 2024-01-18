@@ -286,6 +286,7 @@ enum Instruction {
     PushNumber(f64),
     PushArg(String),
     FunctionCall(String, Vec<Vec<Instruction>>),
+    BuiltinCall(String, Vec<Vec<Instruction>>),
 }
 
 fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, SyntaxErr> {
@@ -448,7 +449,11 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                     }
                     pos += 1;
                 }
-                instructions.push(Instruction::FunctionCall(ident.clone(), params));
+                if BUILTIN_FUNCS.contains(&ident.as_str()) {
+                    instructions.push(Instruction::BuiltinCall(ident.clone(), params));
+                } else {
+                    instructions.push(Instruction::FunctionCall(ident.clone(), params));
+                }
                 i = pos;
             },
             TokenType::Symbol(Symbol::Assign) => {
@@ -533,6 +538,138 @@ enum EvalErr {
     RecursiveFunction,
 }
 
+const BUILTIN_FUNCS: [&str; 15] = [
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "abs",
+    "floor",
+    "ceil",
+    "round",
+    "ln",
+    "log2",
+    "log10",
+    "min",
+    "max",
+];
+
+fn builtin(ident: &str, params: &Vec<f64>) -> Result<f64, EvalErr> {
+    assert!(BUILTIN_FUNCS.len() == 15);
+    match ident {
+        "sin" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("sin".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.sin());
+        },
+        "cos" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("cos".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.cos());
+        },
+        "tan" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("tan".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.tan());
+        },
+        "asin" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("asin".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.asin());
+        },
+        "acos" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("acos".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.acos());
+        },
+        "atan" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("atan".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.atan());
+        },
+        "abs" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("abs".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.abs());
+        },
+        "ceil" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("ceil".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.ceil());
+        },
+        "floor" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("floor".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.floor());
+        },
+        "round" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("round".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.round());
+        },
+        "ln" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("ln".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.ln());
+        },
+        "log2" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("log2".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.log2());
+        },
+        "log10" => {
+            if params.len() != 1 {
+                return Err(EvalErr::ParamsCountDontMatch("log10".to_string(), 1, params.len()));
+            }
+            let x = params.last().unwrap();
+            return Ok(x.log10());
+        },
+        "max" => {
+            if params.len() != 2 {
+                return Err(EvalErr::ParamsCountDontMatch("max".to_string(), 2, params.len()));
+            }
+            let a = params[0];
+            let b = params[1];
+            return Ok(a.max(b));
+        },
+        "min" => {
+            if params.len() != 2 {
+                return Err(EvalErr::ParamsCountDontMatch("min".to_string(), 2, params.len()));
+            }
+            let a = params[0];
+            let b = params[1];
+            return Ok(a.min(b));
+        },
+        _ => unreachable!(),
+    }
+}
+
 fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -> Result<f64, EvalErr> {
     let mut numbers = vec![];
     let mut operations = vec![];
@@ -602,6 +739,28 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                 }
                 match evaluate(&functions, &called_func, &eval_params) {
                     Ok(res) => numbers.push(res),
+                    Err(err) => return Err(err),
+                }
+            },
+            Instruction::BuiltinCall(ident, fparams) => {
+                let mut eval_params = vec![];
+                for param in fparams {
+                    let temp = Func {
+                        ident: "temp".to_string(),
+                        args: func.args.clone(),
+                        expr: param.to_vec(),
+                    };
+                    match evaluate(&functions, &temp, &params) {
+                        Ok(res) => eval_params.push(res),
+                        Err(err) => return Err(err),
+                    }
+                }
+                match builtin(&ident, &eval_params) {
+                    Ok(res) => {
+                        numbers.push(res);
+                        i += 1;
+                        continue;
+                    },
                     Err(err) => return Err(err),
                 }
             },
@@ -753,14 +912,16 @@ fn usage() {
     println!("  def <ident>(<args>) = <expr>");
     println!();
     println!("<ident> | <arg>:");
-    println!("  Names of functions and their arguments may consist of latin latters(A-Z|a-z) and underscore(_).");
+    println!("  Names of functions and their arguments may consist of latin latters(A-Z|a-z), digits(0-9) and underscore(_).");
     println!();
     println!("<command>:");
-    println!("  help        - Prints this message");
-    println!("  list        - Prints list of defined functions");
-    println!("  exit        - Exits the program");
-    println!("  save <path> - Saves all defined functions into file");
-    println!("  load <path> - Loads functions from provided file");
+    println!("  help         - Prints this message");
+    println!("  list         - Prints list of defined functions");
+    println!("  builtin      - Prints list of builtin functions");
+    println!("  exit         - Exits the program");
+    println!("  save <path>  - Saves all defined functions into file");
+    println!("  load <path>  - Loads functions from provided file");
+    println!("  plot <ident> - Plots given function");
     println!();
 }
 
@@ -772,9 +933,28 @@ fn welcome() {
     println!("(If you don't know where to start, type command 'help')")
 }
 
+fn print_builtins() {
+    assert!(BUILTIN_FUNCS.len() == 15);
+    println!("  abs(x)    - Computes the absolute value of x.");
+    println!("  sin(x)    - Computes the sine of x (in radians).");
+    println!("  cos(x)    - Computes the cosine of x (in radians).");
+    println!("  tan(x)    - Computes the tangent of x (in radians).");
+    println!("  asin(x)   - Computes the arcsine of x. Return value is in radians in the range [-pi/2, pi/2] or NaN if x is outside the range [-1, 1].");
+    println!("  acos(x)   - Computes the arccosine of x. Return value is in radians in the range [0, pi] or NaN if x is outside the range [-1, 1].");
+    println!("  atan(x)   - Computes the arctangent of x. Return value is in radians in the range [-pi/2, pi/2].");
+    println!("  ceil(x)   - Returns the smallest integer greater than or equal x.");
+    println!("  floor(x)  - Returns the largest integer less than or equal to x.");
+    println!("  round(x)  - Returns the nearest integer to x.");
+    println!("  ln(x)     - Returns the natural logarithm of x.");
+    println!("  log2(x)   - Returns the base 2 logarithm of x.");
+    println!("  log10(x)  - Returns the base 10 logarithm of x.");
+    println!("  max(a, b) - Returns the maximum of the two numbers.");
+    println!("  min(a, b) - Returns the minimum of the two numbers.");
+}
+
 fn print_functions(functions: &HashMap::<String, Func>) {
     if functions.len() == 0 {
-        println!("    empty");
+        println!("  empty");
     }
     let mut sorted: Vec<Func> = functions.iter().map(|(_, func)| func.clone()).collect();
     sorted.sort_by(|a, b| a.ident.partial_cmp(&b.ident).unwrap());
@@ -881,6 +1061,9 @@ fn save_expr(file: &mut File, expr: &Vec<Instruction>) -> std::io::Result<()> {
             Instruction::FunctionCall(ident, params) => {
                 save_func_call(file, &ident, &params)?;
             },
+            Instruction::BuiltinCall(ident, params) => {
+                save_func_call(file, &ident, &params)?;
+            },
         }
     }
     Ok(())
@@ -930,6 +1113,14 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             print_functions(&state.functions);
             return true;
         },
+        "builtin" => {
+            if let Some(arg) = args.next() {
+                println!("[Error]: Unknown argument '{arg}' for command 'list'");
+                return true;
+            }
+            print_builtins();
+            return true;
+        },
         "help" => {
             if let Some(arg) = args.next() {
                 println!("[Error]: Unknown argument '{arg}' for command 'help'");
@@ -956,6 +1147,10 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             };
             let mut count = 0;
             for func in &funcs {
+                if BUILTIN_FUNCS.contains(&func.ident.as_str()) {
+                    println!("[Error]: Attempt to redefine builtin function '{}'", func.ident);
+                    return true;
+                }
                 if state.functions.contains_key(&func.ident) {
                     count += 1;
                 }
@@ -1016,6 +1211,15 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                 println!("[Error]: Unknown argument '{arg}' for command 'plot'");
                 return true;
             }
+            if BUILTIN_FUNCS.contains(&ident) {
+                let builtin = Func {
+                    ident: "builtin".to_string(),
+                    args: vec!["x".to_string()],
+                    expr: vec![Instruction::BuiltinCall(ident.to_string(), vec![vec![Instruction::PushArg("x".to_string())]])],
+                };
+                plot_mode(state, &builtin, -5.0, 5.0, -5.0, 5.0);
+                return true;
+            }
             let func = state.functions.iter().find(|(_, f)| f.ident == ident);
             match func {
                 Some((_, func)) => {
@@ -1038,6 +1242,10 @@ fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Ins
         match create_function(&tokens) {
             Ok(func) => {
                 let ident = func.ident.clone();
+                if BUILTIN_FUNCS.contains(&ident.as_str()) {
+                    println!("[Error]: Attempt to redefine builtin function '{ident}'");
+                    return None;
+                }
                 if state.functions.contains_key(&ident) {
                     match state.rl.readline(format!("Function '{ident}' already exist, want to redefine? (y/n): ").as_str()) {
                         Ok(res) => match res.to_lowercase().as_str() {
@@ -1077,8 +1285,7 @@ fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Ins
     }
 }
 
-fn plot_mode(state: &mut State, function: &Func,
-    mut xmin: f64, mut xmax: f64, mut ymin: f64, mut ymax: f64) {
+fn plot_mode(state: &mut State, function: &Func, mut xmin: f64, mut xmax: f64, mut ymin: f64, mut ymax: f64) {
     let stdin = stdin();
     let mut stdout = match stdout().into_raw_mode() {
         Ok(stdout) => stdout,
@@ -1130,29 +1337,29 @@ fn plot_mode(state: &mut State, function: &Func,
             Key::Char('+') => {
                 xmin += xstep;
                 xmax -= xstep;
-                ymin += ystep;
-                ymax -= ystep;
+                ymin += ystep/2.0;
+                ymax -= ystep/2.0;
                 if xmin >= xmax {
                     xmin -= xstep;
                     xmax += xstep;
                 }
                 if ymin >= ymax {
-                    ymin -= ystep;
-                    ymax += ystep;
+                    ymin -= ystep/2.0;
+                    ymax += ystep/2.0;
                 }
             },
             Key::Char('-') => {
                 xmin -= xstep;
                 xmax += xstep;
-                ymin -= ystep;
-                ymax += ystep;
+                ymin -= ystep/2.0;
+                ymax += ystep/2.0;
                 if xmin >= xmax {
                     xmin -= xstep;
                     xmax += xstep;
                 }
                 if ymin >= ymax {
-                    ymin -= ystep;
-                    ymax += ystep;
+                    ymin -= ystep/2.0;
+                    ymax += ystep/2.0;
                 }
             },
             Key::Left => {
@@ -1164,12 +1371,12 @@ fn plot_mode(state: &mut State, function: &Func,
                 xmax += xstep;
             },
             Key::Up => {
-                ymin += ystep;
-                ymax += ystep;
+                ymin += ystep/2.0;
+                ymax += ystep/2.0;
             },
             Key::Down => {
-                ymin -= ystep;
-                ymax -= ystep;
+                ymin -= ystep/2.0;
+                ymax -= ystep/2.0;
             },
             _ => {}
         }
@@ -1227,13 +1434,16 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func,
                     x += xstep;
                     continue;
                 }
-                let x = ((x - xmin) / (xmax-xmin) * (twidth-2) as f64) as usize;
-                let y = ((y - ymin) / (ymax-ymin) * (theight-2) as f64) as usize;
+                let x = ((x - xmin) / (xmax-xmin) * (twidth-2) as f64).round() as usize;
+                let y = ((y - ymin) / (ymax-ymin) * (theight-2) as f64).round() as usize;
                 let y = (theight-2)-y;
                 let x = x + 1;
                 print!("{}•", termion::cursor::Goto(x as u16 + 1, y as u16 + 1));
             },
-            Err(_err) => todo!(),
+            Err(err) => {
+                eval_err(err);
+                return;
+            },
         }
         x += xstep;
     }
