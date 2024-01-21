@@ -1449,7 +1449,6 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
         }
         execute!(
             stdout,
-            terminal::Clear(terminal::ClearType::All),
             cursor::MoveTo(0, 0),
         )?;
         print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
@@ -1583,7 +1582,7 @@ fn main() -> rustyline::Result<()> {
             Some(input) => input,
             None => continue,
         };
-        if let None =  input.split_ascii_whitespace().next() {
+        if let None = input.split_ascii_whitespace().next() {
             continue;
         }
         if exec_command(&mut state, &input) {
@@ -1613,4 +1612,4 @@ fn main() -> rustyline::Result<()> {
         }
     }
     Ok(())
-    }
+}
