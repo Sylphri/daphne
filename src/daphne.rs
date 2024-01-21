@@ -918,6 +918,8 @@ fn usage() {
     println!("  save <path>  - Saves all defined functions into file");
     println!("  load <path>  - Loads functions from provided file");
     println!("  plot <ident> - Plots given function");
+    println!("  remove [flags] [ident] ... - Removes provided functions");
+    println!("    flags: -a - Removes all defined functions");
     println!();
 }
 
@@ -1241,6 +1243,40 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                     return true;
                 }
             }
+        },
+        "remove" => {
+            let mut funcs = vec![];
+            match args.next() {
+                Some("-a") => {
+                    if let Some(arg) = args.next() {
+                        println!("[Error]: Unexpected argument '{arg}' after flag '-a'");
+                        return true;
+                    }
+                    let funcs_count = state.functions.len();
+                    state.functions.clear();
+                    println!("  Successfully removed {funcs_count} functions");
+                    return true;
+                },
+                Some(arg) => funcs.push(arg),
+                None => {
+                    println!("[Error]: Missing argument '<ident>' for command 'remove'");
+                    return true;
+                },
+            };
+            while let Some(arg) = args.next() {
+                funcs.push(arg);
+            }
+            for func in &funcs {
+                if !state.functions.contains_key(*func) {
+                    println!("[Error]: Function '{func}' is not defined");
+                    return true;
+                }
+            }
+            for func in &funcs {
+                state.functions.remove(*func);
+            }
+            println!("  Successfully removed {} functions", funcs.len());
+            return true;
         },
         _ => return false,
     }
