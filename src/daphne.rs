@@ -922,9 +922,9 @@ fn usage() {
 }
 
 fn welcome() {
-    println!("   ^ ^                       ");
-    println!("  (O,O) Welcome to Daphne,   ");
-    println!("  (   ) a simple math shell. ");
+    println!("   ^ ^");
+    println!("  (O,O)");
+    println!("  (   ) Welcome to Daphne, a simple math shell. ");
     println!(" --\"-\"------------------------------------------------");
     println!("(If you don't know where to start, type command 'help')")
 }
