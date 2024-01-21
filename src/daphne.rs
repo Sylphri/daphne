@@ -912,12 +912,13 @@ fn usage() {
     println!();
     println!("<command>:");
     println!("  help         - Prints this message");
-    println!("  list         - Prints list of defined functions");
     println!("  builtin      - Prints list of builtin functions");
     println!("  exit         - Exits the program");
     println!("  save <path>  - Saves all defined functions into file");
     println!("  load <path>  - Loads functions from provided file");
     println!("  plot <ident> - Plots given function");
+    println!("  list [flags] - Prints list of defined functions");
+    println!("    flags: -l - Prints full definitions");
     println!("  remove [flags] [ident] ... - Removes provided functions");
     println!("    flags: -a - Removes all defined functions");
     println!();
@@ -950,7 +951,7 @@ fn print_builtins() {
     println!("  min(a, b) - Returns the minimum of the two numbers.");
 }
 
-fn print_functions(functions: &HashMap::<String, Func>) {
+fn print_functions(functions: &HashMap::<String, Func>, full: bool) {
     if functions.len() == 0 {
         println!("  empty");
     }
@@ -968,7 +969,12 @@ fn print_functions(functions: &HashMap::<String, Func>) {
             buffer.pop().unwrap();
         }
         write!(&mut buffer, ")").unwrap();
-        println!("{}", String::from_utf8(buffer).unwrap());
+        print!("{}", String::from_utf8(buffer).unwrap());
+        if full {
+            print!(" = ");
+            write_expr(&mut stdout(), &func.expr).expect("Can't write in stdout");
+        }
+        println!();
     }
 }
 
@@ -1022,17 +1028,17 @@ fn save_file(functions: &HashMap<String, Func>, path: &str) -> std::io::Result<(
             }
         }
         file.write_all(b") = ")?;
-        save_expr(&mut file, &func.expr)?;
+        write_expr(&mut file, &func.expr)?;
         file.write_all(b"\n")?;
     }
     Ok(())
 }
 
-fn save_func_call(file: &mut File, ident: &str, params: &Vec<Vec<Instruction>>) -> std::io::Result<()> {
+fn write_func_call<T: Write>(file: &mut T, ident: &str, params: &Vec<Vec<Instruction>>) -> std::io::Result<()> {
     file.write_all(ident.as_bytes())?;
     file.write_all(b"(")?;
     for (i, expr) in params.iter().enumerate() {
-        save_expr(file, &expr)?;
+        write_expr(file, &expr)?;
         if i != params.len()-1 {
             file.write_all(b", ")?;
         }
@@ -1041,7 +1047,7 @@ fn save_func_call(file: &mut File, ident: &str, params: &Vec<Vec<Instruction>>) 
     Ok(())
 }
 
-fn save_expr(file: &mut File, expr: &Vec<Instruction>) -> std::io::Result<()> {
+fn write_expr<T: Write>(file: &mut T, expr: &Vec<Instruction>) -> std::io::Result<()> {
     for instr in expr {
         match instr {
             Instruction::PushNumber(num) => file.write_all(num.to_string().as_bytes())?,
@@ -1058,10 +1064,10 @@ fn save_expr(file: &mut File, expr: &Vec<Instruction>) -> std::io::Result<()> {
             },
             Instruction::PushArg(arg) => file.write_all(arg.as_bytes())?,
             Instruction::FunctionCall(ident, params) => {
-                save_func_call(file, &ident, &params)?;
+                write_func_call(file, &ident, &params)?;
             },
             Instruction::BuiltinCall(ident, params) => {
-                save_func_call(file, &ident, &params)?;
+                write_func_call(file, &ident, &params)?;
             },
         }
     }
@@ -1105,11 +1111,11 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             return true;
         },
         "list" => {
-            if let Some(arg) = args.next() {
-                println!("[Error]: Unknown argument '{arg}' for command 'list'");
-                return true;
+            match args.next() {
+                Some("-l") => print_functions(&state.functions, true),
+                None => print_functions(&state.functions, false),
+                Some(arg) => println!("[Error]: Unknown argument '{arg}' for command 'list'"),
             }
-            print_functions(&state.functions);
             return true;
         },
         "builtin" => {
