@@ -1429,17 +1429,17 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
                         KeyCode::Up    => { y0 -= ystep/2.0; },
                         KeyCode::Char('+') => {
                             width -= xstep*2.0;
-                            height -= ystep*2.0;
+                            height -= ystep;
                             if width <= 0.0 {
                                 width += xstep*2.0;
                             }
                             if height <= 0.0 {
-                                height += ystep*2.0;
+                                height += ystep;
                             }
                         },
                         KeyCode::Char('-') => {
                             width += xstep*2.0;
-                            height += ystep*2.0;
+                            height += ystep;
                         },
                         _ => {},
                     }
