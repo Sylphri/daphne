@@ -970,6 +970,7 @@ fn print_functions(functions: &HashMap::<String, Func>) {
     }
 }
 
+// TODO: In case of an error report line on which it happens
 fn load_file(path: &str) -> Option<Vec<Func>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -1129,7 +1130,7 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             let path = match args.next() {
                 Some(arg) => arg,
                 None => {
-                    println!("[Error]: Missing argument 'path' for command 'load'");
+                    println!("[Error]: Missing argument '<path>' for command 'load'");
                     return true;
                 },
             };
@@ -1141,24 +1142,29 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                 Some(functions) => functions,
                 None => return true,
             };
-            let mut count = 0;
+            let mut redefined = vec![];
             for func in &funcs {
                 if BUILTIN_FUNCS.contains(&func.ident.as_str()) {
                     println!("[Error]: Attempt to redefine builtin function '{}'", func.ident);
                     return true;
                 }
                 if state.functions.contains_key(&func.ident) {
-                    count += 1;
+                    redefined.push(&func.ident);
                 }
             }
+            let count = redefined.len();
             if count > 0 {
-                match state.rl.readline(format!("Loading of this file will redefine some functions ({count}). Do you want to continue? (y/n): ").as_str()) {
+                println!("Loading of this file will redefine some functions ({count}):");
+                for rd in redefined {
+                    println!("  {rd}");
+                }
+                match state.rl.readline("Do you want to continue? (y/n): ") {
                     Ok(res) => match res.to_lowercase().as_str() {
                         "y" => {
                             for func in &funcs {
                                 state.functions.insert(func.ident.clone(), func.clone());
                             }
-                            println!("  Successfully redefined");
+                            println!("  Successfully redefined {count} functions");
                         },
                         _ => {
                             println!("  Cancelled");
@@ -1172,9 +1178,11 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                     }
                 }
             }
+            let funcs_count = funcs.len();
             for func in funcs {
                 state.functions.insert(func.ident.clone(), func);
             }
+            println!("  Successfully loaded {funcs_count} functions");
             return true;
         },
         "save" => {
