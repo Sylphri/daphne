@@ -916,11 +916,16 @@ fn usage() {
     println!("  exit         - Exits the program");
     println!("  save <path>  - Saves all defined functions into file");
     println!("  load <path>  - Loads functions from provided file");
-    println!("  plot <ident> - Plots given function");
     println!("  list [flags] - Prints list of defined functions");
     println!("    flags: -l - Prints full definitions");
     println!("  remove [flags] [ident] ... - Removes provided functions");
     println!("    flags: -a - Removes all defined functions");
+    println!("  plot <ident> - Plots given function");
+    println!("    controls:");
+    println!("      arrows - Move around");
+    println!("      +/-    - Zoom in and out");
+    println!("      q      - Exit plot mode");
+    println!("      j      - Jump to specified position");
     println!();
 }
 
@@ -953,7 +958,7 @@ fn print_builtins() {
 
 fn print_functions(functions: &HashMap::<String, Func>, full: bool) {
     if functions.len() == 0 {
-        println!("  empty");
+        println!("  [empty]");
     }
     let mut sorted: Vec<Func> = functions.iter().map(|(_, func)| func.clone()).collect();
     sorted.sort_by(|a, b| a.ident.partial_cmp(&b.ident).unwrap());
@@ -1080,12 +1085,14 @@ struct State {
     rl: DefaultEditor,
 }
 
-fn readline(state: &mut State) -> Option<String> {
-    let input = match state.rl.readline("-> ") {
+fn readline(state: &mut State, message: &str, save_history: bool) -> Option<String> {
+    let input = match state.rl.readline(message) {
         Ok(line) => {
-            match state.rl.add_history_entry(line.as_str()) {
-                Err(err) => println!("[Info]: Can't add entry to history '{err}'"),
-                Ok(_) => {},
+            if save_history {
+                match state.rl.add_history_entry(line.as_str()) {
+                    Err(err) => println!("[Info]: Can't add entry to history '{err}'"),
+                    Ok(_) => {},
+                }
             }
             line
         },
@@ -1110,6 +1117,7 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             state.quit = true;
             return true;
         },
+        // TODO: Add search to list and builtin commands
         "list" => {
             match args.next() {
                 Some("-l") => print_functions(&state.functions, true),
@@ -1225,11 +1233,11 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             }
             if BUILTIN_FUNCS.contains(&ident) {
                 let builtin = Func {
-                    ident: "builtin".to_string(),
+                    ident: ident.to_string(),
                     args: vec!["x".to_string()],
                     expr: vec![Instruction::BuiltinCall(ident.to_string(), vec![vec![Instruction::PushArg("x".to_string())]])],
                 };
-                match plot_mode(state, &builtin, -5.0, 5.0, -5.0, 5.0) {
+                match plot_mode(state, &builtin, 0.0, 0.0, 10.0, 10.0) {
                     Err(err) => println!("[Error]: {err}"),
                     Ok(()) => {},
                 }
@@ -1238,7 +1246,7 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             let func = state.functions.iter().find(|(_, f)| f.ident == ident);
             match func {
                 Some((_, func)) => {
-                    match plot_mode(state, &func.clone(), -5.0, 5.0, -5.0, 5.0) {
+                    match plot_mode(state, &func.clone(), 0.0, 0.0, 10.0, 10.0) {
                         Err(err) => println!("[Error]: {err}"),
                         Ok(()) => {},
                     }
@@ -1347,7 +1355,7 @@ fn terminal_size() -> (u16, u16) {
     }
 }
 
-fn plot_mode(state: &mut State, function: &Func, mut xmin: f64, mut xmax: f64, mut ymin: f64, mut ymax: f64) -> std::io::Result<()> {
+fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut width: f64, mut height: f64) -> std::io::Result<()> {
     let mut stdout = stdout();
     enable_raw_mode()?;
     execute!(
@@ -1357,60 +1365,81 @@ fn plot_mode(state: &mut State, function: &Func, mut xmin: f64, mut xmax: f64, m
         cursor::Hide,
     )?;
 
-    print_plot(&state.functions, &function, xmin, xmax, ymin, ymax)?;
+    print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
     loop {
         let (twidth, theight) = terminal_size();
-        let xstep = (xmax-xmin)/(twidth-2) as f64 * 2.0;
-        let ystep = (ymax-ymin)/(theight-3) as f64 * 2.0;
+        let xstep = width/(twidth-2) as f64 * 2.0;
+        let ystep = height/(theight-3) as f64 * 2.0;
         let event = read().unwrap();
         match event {
             Event::Key(event) => {
                 if event.kind == KeyEventKind::Press {
                     match event.code {
                         KeyCode::Char('q') => break,
-                        KeyCode::Left => {
-                            xmin -= xstep;
-                            xmax -= xstep;
-                        },
-                        KeyCode::Right => {
-                            xmin += xstep;
-                            xmax += xstep;
-                        },
-                        KeyCode::Up => {
-                            ymin += ystep/2.0;
-                            ymax += ystep/2.0;
-                        },
-                        KeyCode::Down => {
-                            ymin -= ystep/2.0;
-                            ymax -= ystep/2.0;
-                        },
-                        KeyCode::Char('+') => {
-                            xmin += xstep;
-                            xmax -= xstep;
-                            ymin += ystep/2.0;
-                            ymax -= ystep/2.0;
-                            if xmin >= xmax {
-                                xmin -= xstep;
-                                xmax += xstep;
+                        KeyCode::Char('j') => {
+                            if let Some(input) = readline(state, "jump to: ", false) {
+                                let mut args = input.trim().split_ascii_whitespace();
+                                match args.next() {
+                                    Some(arg) => {
+                                        match arg.parse::<f64>() {
+                                            Ok(x) => x0 = x,
+                                            Err(err) => {
+                                                execute!(
+                                                    stdout,
+                                                    cursor::MoveTo(0, theight-1),
+                                                    terminal::ScrollDown(1),
+                                                    Print(format!("[Error]: Can't parse value of 'x': {err}")),
+                                                )?;
+                                                continue;
+                                            },
+                                        }
+                                    },
+                                    None => {
+                                        execute!(
+                                            stdout,
+                                            cursor::MoveTo(0, theight-1),
+                                            terminal::ScrollDown(1),
+                                            Print("[Error]: Missing argument 'x'"),
+                                        )?;
+                                        continue;
+                                    }
+                                };
+                                match args.next() {
+                                    Some(arg) => {
+                                        match arg.parse::<f64>() {
+                                            Ok(y) => y0 = y,
+                                            Err(err) => {
+                                                execute!(
+                                                    stdout,
+                                                    cursor::MoveTo(0, theight-1),
+                                                    terminal::ScrollDown(1),
+                                                    Print(format!("[Error]: Can't parse value of 'y': {err}")),
+                                                )?;
+                                                continue;
+                                            },
+                                        }
+                                    },
+                                    None => {},
+                                };
                             }
-                            if ymin >= ymax {
-                                ymin -= ystep/2.0;
-                                ymax += ystep/2.0;
+                        },
+                        KeyCode::Left  => { x0 += xstep; },
+                        KeyCode::Right => { x0 -= xstep; },
+                        KeyCode::Down  => { y0 += ystep/2.0; },
+                        KeyCode::Up    => { y0 -= ystep/2.0; },
+                        KeyCode::Char('+') => {
+                            width -= xstep*2.0;
+                            height -= ystep*2.0;
+                            if width <= 0.0 {
+                                width += xstep*2.0;
+                            }
+                            if height <= 0.0 {
+                                height += ystep*2.0;
                             }
                         },
                         KeyCode::Char('-') => {
-                            xmin -= xstep;
-                            xmax += xstep;
-                            ymin -= ystep/2.0;
-                            ymax += ystep/2.0;
-                            if xmin >= xmax {
-                                xmin -= xstep;
-                                xmax += xstep;
-                            }
-                            if ymin >= ymax {
-                                ymin -= ystep/2.0;
-                                ymax += ystep/2.0;
-                            }
+                            width += xstep*2.0;
+                            height += ystep*2.0;
                         },
                         _ => {},
                     }
@@ -1423,27 +1452,25 @@ fn plot_mode(state: &mut State, function: &Func, mut xmin: f64, mut xmax: f64, m
             terminal::Clear(terminal::ClearType::All),
             cursor::MoveTo(0, 0),
         )?;
-        print_plot(&state.functions, &function, xmin, xmax, ymin, ymax)?;
+        print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
     }
     execute!(stdout, cursor::Show)?;
     disable_raw_mode()?;
     Ok(())
 }
 
-fn print_plot(functions: &HashMap<String, Func>, function: &Func,
-    xmin: f64, xmax: f64, ymin: f64, ymax: f64) -> std::io::Result<()> {
+fn print_plot(functions: &HashMap<String, Func>, function: &Func, xmin: f64, xmax: f64, ymin: f64, ymax: f64) -> std::io::Result<()> {
     let (twidth, theight) = terminal_size();
     let theight = (theight - 1) as usize;
     let twidth = twidth as usize;
 
     let mut plot = vec!['·'; twidth*theight];
+    // Frame
     for i in 0..twidth {
-        plot[theight/2*twidth+i] = '─';
         plot[i] = '─';
         plot[(theight-1)*twidth+i] = '─';
     }
     for i in 0..theight {
-        plot[twidth*i+twidth/2] = '│';
         plot[twidth*i] = '│';
         plot[twidth*i+twidth-1] = '│';
     }
@@ -1451,11 +1478,49 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func,
     plot[twidth-1] = '╮';
     plot[twidth*(theight-1)] = '╰';
     plot[twidth*theight-1] = '╯';
-    plot[twidth/2] = '┬';
-    plot[twidth*(theight-1)+twidth/2] = '┴';
-    plot[theight/2*twidth] = '├';
-    plot[theight/2*twidth+twidth-1] = '┤';
-    plot[theight/2*twidth+twidth/2] = '┼';
+
+    // x axis
+    if ymin <= 0.0 && ymax >= 0.0 {
+        let mut y0 = ((0.0 - ymin) / (ymax-ymin) * (theight-2) as f64) as usize;
+        y0 = (theight-2)-y0;
+        for i in 0..twidth {
+            plot[y0*twidth+i] = '─';
+        }
+        plot[y0*twidth] = '├';
+        plot[y0*twidth+twidth-1] = '┤';
+    }
+    // y axis
+    if xmin <= 0.0 && xmax >= 0.0 {
+        let x0 = ((0.0 - xmin) / (xmax-xmin) * (twidth-2) as f64) as usize + 1;
+        for i in 0..theight {
+            plot[twidth*i+x0] = '│';
+        }
+        plot[x0] = '┬';
+        plot[twidth*(theight-1)+x0] = '┴';
+    }
+    // center
+    if ymin <= 0.0 && ymax >= 0.0 && xmin <= 0.0 && xmax >= 0.0 {
+        let mut y0 = ((0.0 - ymin) / (ymax-ymin) * (theight-2) as f64) as usize;
+        y0 = (theight-2)-y0;
+        let x0 = ((0.0 - xmin) / (xmax-xmin) * (twidth-2) as f64) as usize + 1;
+        plot[y0*twidth+x0] = '┼';
+    }
+
+    for i in 1..twidth-1 {
+        if i < twidth/2 { 
+            plot[theight/2*twidth+i] = '╴';
+        } else {
+            plot[theight/2*twidth+i] = '╶';
+        }
+    }
+    for i in 1..theight-1 {
+        if i < theight/2 { 
+            plot[twidth*i+twidth/2] = '╵';
+        } else {
+            plot[twidth*i+twidth/2] = '╷';
+        }
+    }
+    plot[theight/2*twidth+twidth/2] = '•';
 
     let mut stdout = stdout();
     execute!(
@@ -1500,7 +1565,7 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func,
     execute!(
         stdout,
         cursor::MoveTo(0, theight as u16 + 1),
-        Print(format!("x = {x:.2}, y = {y:.2}")),
+        Print(format!("x = {:.2}, y = {:.2}, {}(x) = {:.2}", x, ymin+(ymax-ymin)/2.0, function.ident, y)),
     )?;
     Ok(())
 }
@@ -1514,7 +1579,7 @@ fn main() -> rustyline::Result<()> {
     };
     welcome();
     while !state.quit {
-        let mut input = match readline(&mut state) {
+        let mut input = match readline(&mut state, "-> ", true) {
             Some(input) => input,
             None => continue,
         };
@@ -1548,4 +1613,4 @@ fn main() -> rustyline::Result<()> {
         }
     }
     Ok(())
-}
+    }
