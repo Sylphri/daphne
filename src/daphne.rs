@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Write, Read, stdout};
-use rustyline::DefaultEditor;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::highlight::Highlighter;
+use rustyline::history::DefaultHistory;
+use rustyline::{Editor, DefaultEditor, CompletionType, Config, Helper, Context};
+use rustyline::completion::Completer;
 use crossterm::{execute, terminal, cursor};
 use crossterm::event::{read, Event, KeyEventKind, KeyCode};
 use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
@@ -910,6 +915,7 @@ fn usage() {
     println!("<ident> | <arg>:");
     println!("  Names of functions and their arguments may consist of latin latters(A-Z|a-z), digits(0-9) and underscore(_).");
     println!();
+    assert!(COMMANDS.len() == 8);
     println!("<command>:");
     println!("  help         - Prints this message");
     println!("  builtin      - Prints list of builtin functions");
@@ -1082,10 +1088,10 @@ fn write_expr<T: Write>(file: &mut T, expr: &Vec<Instruction>) -> std::io::Resul
 struct State {
     quit: bool,
     functions: HashMap<String, Func>,
-    rl: DefaultEditor,
+    rl: Editor<CmdHelper, DefaultHistory>,
 }
 
-fn readline(editor: &mut DefaultEditor, message: &str) -> Option<String> {
+fn readline(editor: &mut Editor<CmdHelper, DefaultHistory>, message: &str) -> Option<String> {
     let input = match editor.readline(message) {
         Ok(line) => {
             match editor.add_history_entry(line.as_str()) {
@@ -1105,6 +1111,7 @@ fn readline(editor: &mut DefaultEditor, message: &str) -> Option<String> {
 fn exec_command(state: &mut State, input: &str) -> bool {
     let command = input.split_ascii_whitespace().next().expect("There must be at least a command in input");
     let mut args = input.split_ascii_whitespace().skip(1);
+    assert!(COMMANDS.len() == 8);
     match command {
         "exit" => {
             if let Some(arg) = args.next() {
@@ -1388,40 +1395,39 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
                         KeyCode::Char('q') => break,
                         KeyCode::Char('j') => {
                             execute!(stdout, cursor::Show)?;
-                            if let Some(input) = readline(&mut editor, "jump to: ") {
-                                execute!(stdout, terminal::ScrollDown(1))?;
-                                let mut args = input.trim().split_ascii_whitespace();
-                                match args.next() {
-                                    Some(arg) => {
-                                        match arg.parse::<f64>() {
-                                            Ok(x) => x0 = x,
-                                            Err(err) => {
-                                                print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
-                                                plot_mode_err(&format!("[Error]: Can't parse value of 'x': {err}"))?;
-                                                continue;
-                                            },
-                                        }
-                                    },
-                                    None => {
-                                        print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
-                                        plot_mode_err("[Error]: Missing argument 'x'")?;
-                                        continue;
+                            let input = editor.readline("jump to: ").expect("Can't read line");
+                            execute!(stdout, terminal::ScrollDown(1))?;
+                            let mut args = input.trim().split_ascii_whitespace();
+                            match args.next() {
+                                Some(arg) => {
+                                    match arg.parse::<f64>() {
+                                        Ok(x) => x0 = x,
+                                        Err(err) => {
+                                            print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
+                                            plot_mode_err(&format!("[Error]: Can't parse value of 'x': {err}"))?;
+                                            continue;
+                                        },
                                     }
-                                };
-                                match args.next() {
-                                    Some(arg) => {
-                                        match arg.parse::<f64>() {
-                                            Ok(y) => y0 = y,
-                                            Err(err) => {
-                                                print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
-                                                plot_mode_err(&format!("[Error]: Can't parse value of 'y': {err}"))?;
-                                                continue;
-                                            },
-                                        }
-                                    },
-                                    None => {},
-                                };
-                            }
+                                },
+                                None => {
+                                    print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
+                                    plot_mode_err("[Error]: Missing argument 'x'")?;
+                                    continue;
+                                }
+                            };
+                            match args.next() {
+                                Some(arg) => {
+                                    match arg.parse::<f64>() {
+                                        Ok(y) => y0 = y,
+                                        Err(err) => {
+                                            print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
+                                            plot_mode_err(&format!("[Error]: Can't parse value of 'y': {err}"))?;
+                                            continue;
+                                        },
+                                    }
+                                },
+                                None => {},
+                            };
                             execute!(stdout, cursor::Hide)?;
                         },
                         KeyCode::Left  => { x0 -= xstep; },
@@ -1568,15 +1574,97 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func, xmin: f64, xma
     Ok(())
 }
 
+const COMMANDS: [&str; 8] = [
+    "help",
+    "builtin",
+    "exit",
+    "save",
+    "load",
+    "list",
+    "remove",
+    "plot",
+];
+
+struct CmdHelper {
+    functions: Vec<String>,
+}
+
+impl Completer for CmdHelper {
+    type Candidate = String;
+    fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        let mut candidates = vec![];
+        if line.len() == 0 {
+            for ident in BUILTIN_FUNCS {
+                candidates.push(ident.to_string());
+            }
+            for ident in &self.functions {
+                candidates.push(ident.to_string());
+            }
+            for cmd in COMMANDS {
+                candidates.push(cmd.to_string());
+            }
+            candidates.sort_by(|a, b| a.partial_cmp(&b).unwrap());
+            return Ok((0, candidates));
+        }
+        let mut begin = pos-1;
+        while begin > 0 {
+            match line.chars().nth(begin) {
+                Some(ch) => {
+                    if is_valid_ident_char(ch) {
+                        begin -= 1;
+                        continue;
+                    }
+                    begin += 1;
+                    break;
+                },
+                None => unreachable!(),
+            }
+        }
+        let word = &line[begin..pos];
+        for ident in BUILTIN_FUNCS {
+            if ident.len() >= word.len() && &ident[..word.len()] == word {
+                candidates.push(ident.to_string());
+            }
+        }
+        for ident in &self.functions {
+            if ident.len() >= word.len() && &ident[..word.len()] == word {
+                candidates.push(ident.to_string());
+            }
+        }
+        for cmd in COMMANDS {
+            if cmd.len() >= word.len() && &cmd[..word.len()] == word {
+                candidates.push(cmd.to_string());
+            }
+        }
+        candidates.sort_by(|a, b| a.partial_cmp(&b).unwrap());
+        Ok((begin, candidates))
+    }
+}
+
+impl Hinter for CmdHelper { type Hint = String; }
+impl Validator for CmdHelper { }
+impl Highlighter for CmdHelper { }
+impl Helper for CmdHelper { }
+
 // TODO: Add README.md
 fn main() -> rustyline::Result<()> {
+    let config = Config::builder()
+        .history_ignore_space(true)
+        .completion_type(CompletionType::Circular)
+        .build();
     let mut state = State {
         quit: false,
         functions: HashMap::<String, Func>::new(),
-        rl: DefaultEditor::new()?,
+        rl: Editor::<CmdHelper, DefaultHistory>::with_config(config)?,
     };
+    let helper = CmdHelper {
+        functions: vec![],
+    };
+    state.rl.set_helper(Some(helper));
     welcome();
     while !state.quit {
+        state.rl.helper_mut().expect("There must be a helper")
+            .functions = state.functions.iter().map(|(ident, _)| ident.clone()).collect();
         let mut input = match readline(&mut state.rl, "-> ") {
             Some(input) => input,
             None => {
