@@ -1085,20 +1085,17 @@ struct State {
     rl: DefaultEditor,
 }
 
-fn readline(state: &mut State, message: &str, save_history: bool) -> Option<String> {
-    let input = match state.rl.readline(message) {
+fn readline(editor: &mut DefaultEditor, message: &str) -> Option<String> {
+    let input = match editor.readline(message) {
         Ok(line) => {
-            if save_history {
-                match state.rl.add_history_entry(line.as_str()) {
-                    Err(err) => println!("[Info]: Can't add entry to history '{err}'"),
-                    Ok(_) => {},
-                }
+            match editor.add_history_entry(line.as_str()) {
+                Err(err) => println!("[Info]: Can't add entry to history '{err}'"),
+                Ok(_) => {},
             }
             line
         },
         Err(err) => {
             println!("{err}");
-            state.quit = true;
             return None;
         }
     };
@@ -1355,6 +1352,18 @@ fn terminal_size() -> (u16, u16) {
     }
 }
 
+fn plot_mode_err(message: &str) -> std::io::Result<()> {
+    let (_, theight) = terminal_size();
+    execute!(
+        stdout(),
+        cursor::MoveTo(0, theight-1),
+        terminal::Clear(terminal::ClearType::CurrentLine),
+        Print(message),
+        cursor::Hide,
+    )?;
+    Ok(())
+}
+
 fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut width: f64, mut height: f64) -> std::io::Result<()> {
     let mut stdout = stdout();
     enable_raw_mode()?;
@@ -1366,6 +1375,7 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
     )?;
 
     print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
+    let mut editor = DefaultEditor::new().expect("Can't create editor");
     loop {
         let (twidth, theight) = terminal_size();
         let xstep = width/(twidth-2) as f64 * 2.0;
@@ -1377,30 +1387,24 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
                     match event.code {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('j') => {
-                            if let Some(input) = readline(state, "jump to: ", false) {
+                            execute!(stdout, cursor::Show)?;
+                            if let Some(input) = readline(&mut editor, "jump to: ") {
+                                execute!(stdout, terminal::ScrollDown(1))?;
                                 let mut args = input.trim().split_ascii_whitespace();
                                 match args.next() {
                                     Some(arg) => {
                                         match arg.parse::<f64>() {
                                             Ok(x) => x0 = x,
                                             Err(err) => {
-                                                execute!(
-                                                    stdout,
-                                                    cursor::MoveTo(0, theight-1),
-                                                    terminal::ScrollDown(1),
-                                                    Print(format!("[Error]: Can't parse value of 'x': {err}")),
-                                                )?;
+                                                print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
+                                                plot_mode_err(&format!("[Error]: Can't parse value of 'x': {err}"))?;
                                                 continue;
                                             },
                                         }
                                     },
                                     None => {
-                                        execute!(
-                                            stdout,
-                                            cursor::MoveTo(0, theight-1),
-                                            terminal::ScrollDown(1),
-                                            Print("[Error]: Missing argument 'x'"),
-                                        )?;
+                                        print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
+                                        plot_mode_err("[Error]: Missing argument 'x'")?;
                                         continue;
                                     }
                                 };
@@ -1409,12 +1413,8 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
                                         match arg.parse::<f64>() {
                                             Ok(y) => y0 = y,
                                             Err(err) => {
-                                                execute!(
-                                                    stdout,
-                                                    cursor::MoveTo(0, theight-1),
-                                                    terminal::ScrollDown(1),
-                                                    Print(format!("[Error]: Can't parse value of 'y': {err}")),
-                                                )?;
+                                                print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
+                                                plot_mode_err(&format!("[Error]: Can't parse value of 'y': {err}"))?;
                                                 continue;
                                             },
                                         }
@@ -1422,6 +1422,7 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
                                     None => {},
                                 };
                             }
+                            execute!(stdout, cursor::Hide)?;
                         },
                         KeyCode::Left  => { x0 -= xstep; },
                         KeyCode::Right => { x0 += xstep; },
@@ -1447,10 +1448,6 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
             },
             _ => {},
         }
-        execute!(
-            stdout,
-            cursor::MoveTo(0, 0),
-        )?;
         print_plot(&state.functions, &function, x0-width/2.0, x0+width/2.0, y0-height/2.0, y0+height/2.0)?;
     }
     execute!(stdout, cursor::Show)?;
@@ -1524,6 +1521,7 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func, xmin: f64, xma
     let mut stdout = stdout();
     execute!(
         stdout,
+        cursor::MoveTo(0, 0),
         SetForegroundColor(Color::Rgb{r: 110, g: 115, b: 141}),
         Print(plot.iter().collect::<String>()),
         ResetColor
@@ -1564,6 +1562,7 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func, xmin: f64, xma
     execute!(
         stdout,
         cursor::MoveTo(0, theight as u16 + 1),
+        terminal::Clear(terminal::ClearType::CurrentLine),
         Print(format!("x = {:.2}, y = {:.2}, {}(x) = {:.2}", x, ymin+(ymax-ymin)/2.0, function.ident, y)),
     )?;
     Ok(())
@@ -1578,9 +1577,12 @@ fn main() -> rustyline::Result<()> {
     };
     welcome();
     while !state.quit {
-        let mut input = match readline(&mut state, "-> ", true) {
+        let mut input = match readline(&mut state.rl, "-> ") {
             Some(input) => input,
-            None => continue,
+            None => {
+                state.quit = true;
+                continue;
+            },
         };
         if let None = input.split_ascii_whitespace().next() {
             continue;
