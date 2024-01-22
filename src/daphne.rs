@@ -1423,10 +1423,10 @@ fn plot_mode(state: &mut State, function: &Func, mut x0: f64, mut y0: f64, mut w
                                 };
                             }
                         },
-                        KeyCode::Left  => { x0 += xstep; },
-                        KeyCode::Right => { x0 -= xstep; },
-                        KeyCode::Down  => { y0 += ystep/2.0; },
-                        KeyCode::Up    => { y0 -= ystep/2.0; },
+                        KeyCode::Left  => { x0 -= xstep; },
+                        KeyCode::Right => { x0 += xstep; },
+                        KeyCode::Down  => { y0 -= ystep/2.0; },
+                        KeyCode::Up    => { y0 += ystep/2.0; },
                         KeyCode::Char('+') => {
                             width -= xstep*2.0;
                             height -= ystep;
