@@ -29,11 +29,15 @@ enum Operation {
 enum Symbol {
     Comma,
     Assign,
+    Colon,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Keyword {
     Def,
+    Sum,
+    Prod,
+    With,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +95,9 @@ fn trim_start(line: &str) -> (&str, usize) {
 fn parse_keyword(word: &str) -> Option<Keyword> {
     match word {
         "def" => Some(Keyword::Def),
+        "sum" => Some(Keyword::Sum),
+        "prod" => Some(Keyword::Prod),
+        "with" => Some(Keyword::With),
         _ => None,
     }
 }
@@ -121,7 +128,7 @@ fn parse(input: &str) -> Result<Vec<Token>, (usize, String)> {
         // operators
         '+', '-', '*', '/', '^',
         // symbols
-        ',', '=', '(', ')',
+        ',', '=', '(', ')', ':'
     ];
     let mut tokens = vec![];
     let (mut input, mut begin) = trim_start(input);
@@ -162,6 +169,7 @@ fn parse(input: &str) -> Result<Vec<Token>, (usize, String)> {
                     ')' => TokenType::Operation(Operation::RightParen),
                     ',' => TokenType::Symbol(Symbol::Comma),
                     '=' => TokenType::Symbol(Symbol::Assign),
+                    ':' => TokenType::Symbol(Symbol::Colon),
                     _ => unreachable!(),
                 },
                 pos: begin+i,
@@ -192,15 +200,27 @@ enum SyntaxErr {
     MissingOp(Token, Token),
     MissingLeftParen(Token),
     MissingRightParen(Token),
-    EmptyParens(Token),
     MissingFuncIdent(Token),
     MissingArgIdent(Token),
-    RepeatingArgIdent(Token),
     MissingComma(Token),
     MissingAssign(Token),
     MissingFuncBody(Token),
+    MissingLowerBound(Token),
+    MissingUpperBound(Token),
+    MissingStep(Token),
+    MissingColon(Token),
+    MissingWith(Token),
+    MissingItIdent(Token),
+    MissingSumBody(Token),
+    EmptyParens(Token),
+    RepeatingArgIdent(Token),
+    ItEqualsToArg(Token),
     AssignInsideOfExpr(Token),
     DefInsideOfExpr(Token),
+    UnexpectedComma(Token),
+    UnexpectedWith(Token),
+    UnexpectedColon(Token),
+    UnknownArg(Token),
 }
 
 fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
@@ -288,12 +308,20 @@ fn binary_op_check(pos: usize, tokens: &[Token]) -> Result<(), Token> {
 }
 
 #[derive(Debug, Clone)]
+enum SumArg {
+    Number(f64),
+    Arg(String),
+}
+
+#[derive(Debug, Clone)]
 enum Instruction {
     PushOp(Operation),
     PushNumber(f64),
     PushArg(String),
     FunctionCall(String, Vec<Vec<Instruction>>),
     BuiltinCall(String, Vec<Vec<Instruction>>),
+    Sum(SumArg, SumArg, SumArg, String, Vec<Instruction>),
+    Prod(SumArg, SumArg, SumArg, String, Vec<Instruction>),
 }
 
 fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, SyntaxErr> {
@@ -344,6 +372,8 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                     TokenType::Operation(Operation::UnaryPlus)  |
                     TokenType::Operation(Operation::UnaryMinus) |
                     TokenType::Operation(Operation::LeftParen)  |
+                    TokenType::Keyword(Keyword::Sum)            |
+                    TokenType::Keyword(Keyword::Prod)           |
                     TokenType::Ident(_)                         |
                     TokenType::Number(_) => {},
                     _ => return Err(SyntaxErr::MissingArg(tokens[i+1].clone())),
@@ -463,13 +493,149 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                 }
                 i = pos;
             },
+            // TODO: Add support for expressions in bounds and step
+            op @ TokenType::Keyword(Keyword::Prod) |
+            op @ TokenType::Keyword(Keyword::Sum)  => {
+                if instructions.len() == 0 || tokens[i-1].ttype != TokenType::Operation(Operation::LeftParen) {
+                    return Err(SyntaxErr::MissingLeftParen(tokens[i].clone()));
+                }
+                parens.pop().unwrap();
+                instructions.pop().unwrap();
+                i += 1;
+                let lower = match tokens.get(i) {
+                    Some(token) => {
+                        match &token.ttype {
+                            TokenType::Number(num) => SumArg::Number(*num),
+                            TokenType::Ident(ident) => {
+                                if let Some(_) = args.iter().find(|arg| *arg == ident) {
+                                    SumArg::Arg(ident.to_string())
+                                } else {
+                                    return Err(SyntaxErr::UnknownArg(tokens[i].clone()));
+                                }
+                            },
+                            _ => return Err(SyntaxErr::MissingLowerBound(tokens[i-1].clone())),
+                        }
+                    },
+                    None => return Err(SyntaxErr::MissingLowerBound(tokens[i-1].clone())),
+                };
+                i += 1;
+                let upper = match tokens.get(i) {
+                    Some(token) => {
+                        match &token.ttype {
+                            TokenType::Number(num) => SumArg::Number(*num),
+                            TokenType::Ident(ident) => {
+                                if let Some(_) = args.iter().find(|arg| *arg == ident) {
+                                    SumArg::Arg(ident.to_string())
+                                } else {
+                                    return Err(SyntaxErr::UnknownArg(tokens[i].clone()));
+                                }
+                            },
+                            _ => return Err(SyntaxErr::MissingUpperBound(tokens[i-1].clone())),
+                        }
+                    },
+                    None => return Err(SyntaxErr::MissingUpperBound(tokens[i-1].clone())),
+                };
+                i += 1;
+                let step = match tokens.get(i) {
+                    Some(token) => {
+                        match &token.ttype {
+                            TokenType::Number(num) => SumArg::Number(*num),
+                            TokenType::Ident(ident) => {
+                                if let Some(_) = args.iter().find(|arg| *arg == ident) {
+                                    SumArg::Arg(ident.to_string())
+                                } else {
+                                    return Err(SyntaxErr::UnknownArg(tokens[i].clone()));
+                                }
+                            },
+                            _ => return Err(SyntaxErr::MissingStep(tokens[i-1].clone())),
+                        }
+                    },
+                    None => return Err(SyntaxErr::MissingStep(tokens[i-1].clone())),
+                };
+                i += 1;
+                match tokens.get(i) {
+                    Some(token) => {
+                        match token.ttype {
+                            TokenType::Keyword(Keyword::With) => {},
+                            _ => return Err(SyntaxErr::MissingWith(tokens[i-1].clone())),
+                        }
+                    },
+                    None => return Err(SyntaxErr::MissingWith(tokens[i-1].clone())),
+                }
+                i += 1;
+                let it = match tokens.get(i) {
+                    Some(token) => {
+                        match &token.ttype {
+                            TokenType::Ident(ident) => ident,
+                            _ => return Err(SyntaxErr::MissingItIdent(tokens[i-1].clone())),
+                        }
+                    },
+                    None => return Err(SyntaxErr::MissingItIdent(tokens[i-1].clone())),
+                };
+                for arg in args {
+                    if arg == it {
+                        return Err(SyntaxErr::ItEqualsToArg(tokens[i].clone()));
+                    }
+                }
+                i += 1;
+                match tokens.get(i) {
+                    Some(token) => {
+                        match token.ttype {
+                            TokenType::Symbol(Symbol::Colon) => {},
+                            _ => return Err(SyntaxErr::MissingColon(tokens[i-1].clone())),
+                        }
+                    },
+                    None => return Err(SyntaxErr::MissingColon(tokens[i-1].clone())),
+                }
+                let mut pos = i + 1;
+                let mut parens = 1;
+                loop {
+                    let token = match tokens.get(pos) {
+                        Some(token) => token,
+                        None => return Err(SyntaxErr::MissingRightParen(tokens[pos-1].clone())),
+                    };
+                    match token.ttype {
+                        TokenType::Operation(Operation::LeftParen) => parens += 1,
+                        TokenType::Operation(Operation::RightParen) => parens -= 1,
+                        _ => {},
+                    }
+                    if parens == 0 {
+                        break;
+                    }
+                    pos += 1;
+                }
+                if pos == i + 1 {
+                    return Err(SyntaxErr::MissingSumBody(tokens[i].clone()));
+                }
+                let mut args = args.to_vec();
+                args.push(it.to_string());
+                let expr = match create_expr(&tokens[i+1..pos], &args) {
+                    Err(err) => return Err(err),
+                    Ok(instructions) => instructions,
+                };
+                match op {
+                    TokenType::Keyword(Keyword::Sum) => 
+                        instructions.push(Instruction::Sum(lower, upper, step, it.to_string(), expr)), 
+                    TokenType::Keyword(Keyword::Prod) => instructions.push(Instruction::Prod(lower, upper, step, it.to_string(), expr)), 
+                    _ => unreachable!(),
+                }
+                i = pos+1;
+            },
             TokenType::Symbol(Symbol::Assign) => {
                 return Err(SyntaxErr::AssignInsideOfExpr(tokens[i].clone()));
             },
             TokenType::Keyword(Keyword::Def) => {
                 return Err(SyntaxErr::DefInsideOfExpr(tokens[i].clone()));
             },
-            TokenType::Symbol(Symbol::Comma) => unreachable!(),
+            TokenType::Keyword(Keyword::With) => {
+                return Err(SyntaxErr::UnexpectedWith(tokens[i].clone()));
+            },
+            TokenType::Symbol(Symbol::Comma) => {
+                return Err(SyntaxErr::UnexpectedComma(tokens[i].clone()));
+            },
+            TokenType::Symbol(Symbol::Colon) => {
+                return Err(SyntaxErr::UnexpectedColon(tokens[i].clone()));
+            },
         }
         i += 1;
     }
@@ -771,6 +937,61 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                     Err(err) => return Err(err),
                 }
             },
+            op @ Instruction::Sum(lower, upper, step, it_ident, expr)  |
+            op @ Instruction::Prod(lower, upper, step, it_ident, expr) => {
+                let lower = match lower {
+                    SumArg::Number(num) => *num,
+                    SumArg::Arg(ident) => {
+                        let idx = func.args.iter().position(|arg| *arg == *ident).expect("Error in create_expr()");
+                        params[idx]
+                    },
+                };
+                let upper = match upper {
+                    SumArg::Number(num) => *num,
+                    SumArg::Arg(ident) => {
+                        let idx = func.args.iter().position(|arg| *arg == *ident).expect("Error in create_expr()");
+                        params[idx]
+                    },
+                };
+                let step = match step {
+                    SumArg::Number(num) => *num,
+                    SumArg::Arg(ident) => {
+                        let idx = func.args.iter().position(|arg| *arg == *ident).expect("Error in create_expr()");
+                        params[idx]
+                    },
+                };
+                let mut result = match op {
+                    Instruction::Sum(..) => 0.0,
+                    Instruction::Prod(..) => 1.0,
+                    _ => unreachable!(),
+                };
+                let mut it = lower;
+                let mut args = func.args.clone();
+                args.push(it_ident.to_string());
+                let mut params = params.clone();
+                params.push(0.0);
+                let temp = Func {
+                    ident: "sum".to_string(),
+                    args: args,
+                    expr: expr.to_vec(),
+                };
+                while it < upper {
+                    params.pop().unwrap();
+                    params.push(it);
+                    match evaluate(&functions, &temp, &params) {
+                        Ok(res) => {
+                            match op {
+                                Instruction::Sum(..) => result += res,
+                                Instruction::Prod(..) => result *= res,
+                                _ => unreachable!(),
+                            };
+                        },
+                        Err(err) => return Err(err),
+                    }
+                    it += step;
+                }
+                numbers.push(result);
+            },
         }
         i += 1;
     }
@@ -820,7 +1041,7 @@ fn syntax_err(input: &str, err: SyntaxErr) {
                     };
                     print_err(&input, &format!("Missing argument for '{op_str}' operation"), token.pos);
                 },
-                _ => unreachable!("Error in create_expr()"),
+                other => unreachable!("Error in create_expr(): {other:?}"),
             }
         },
         SyntaxErr::MissingOp(a, b) => {
@@ -877,6 +1098,52 @@ fn syntax_err(input: &str, err: SyntaxErr) {
         },
         SyntaxErr::DefInsideOfExpr(token) => {
             print_err(&input, &format!("Trying to define functions inside of expression"), token.pos);
+        },
+        SyntaxErr::MissingLowerBound(token) => {
+            print_err(&input, &format!("Missing lower bound inside of 'sum/prod' expression"), token.pos);
+        },
+        SyntaxErr::MissingUpperBound(token) => {
+            print_err(&input, &format!("Missing upper bound inside of 'sum/prod' expression"), token.pos);
+        },
+        SyntaxErr::MissingStep(token) => {
+            print_err(&input, &format!("Missing step inside of 'sum/prod' expression"), token.pos);
+        },
+        SyntaxErr::MissingSumBody(token) => {
+            print_err(&input, &format!("Missing body of 'sum/prod' expression"), token.pos);
+        },
+        SyntaxErr::MissingColon(token) => {
+            print_err(&input, &format!("Missing colon in 'sum/prod' expression"), token.pos);
+        },
+        SyntaxErr::UnexpectedColon(token) => {
+            print_err(&input, &format!("Unexpected colon. Colon used only in 'sum/prod' expressions"), token.pos);
+        },
+        SyntaxErr::UnexpectedComma(token) => {
+            print_err(&input, &format!("Unexpected comma. Commas used only in function calls and defenitions"), token.pos);
+        },
+        SyntaxErr::UnexpectedWith(token) => {
+            print_err(&input, &format!("Unexpected 'with' keyword. 'with' keyword used only in 'sum/prod' expressions"), token.pos);
+        },
+        SyntaxErr::MissingWith(token) => {
+            print_err(&input, &format!("Missing 'with' keyword in 'sum/prod' expression"), token.pos);
+        },
+        SyntaxErr::MissingItIdent(token) => {
+            print_err(&input, &format!("Missing identifier for iterative variable in 'sum/prod' expression"), token.pos);
+        },
+        SyntaxErr::ItEqualsToArg(token) => {
+            match token.ttype {
+                TokenType::Ident(ident) => {
+                    print_err(&input, &format!("Iterative variable identifier '{ident}' overlaps with argument of outer function"), token.pos);
+                },
+                _ => unreachable!("Error in create_expr()"),
+            }
+        },
+        SyntaxErr::UnknownArg(token) => {
+            match token.ttype {
+                TokenType::Ident(ident) => {
+                    print_err(&input, &format!("Unknown argument '{ident}'"), token.pos);
+                },
+                _ => unreachable!("Error in create_expr()"),
+            }
         },
     }
 }
@@ -1079,6 +1346,33 @@ fn write_expr<T: Write>(file: &mut T, expr: &Vec<Instruction>) -> std::io::Resul
             },
             Instruction::BuiltinCall(ident, params) => {
                 write_func_call(file, &ident, &params)?;
+            },
+            op @ Instruction::Sum(lower, upper, step, it, expr)  |
+            op @ Instruction::Prod(lower, upper, step, it, expr) => {
+                match op {
+                    Instruction::Sum(..) => file.write_all(b"(sum ")?,
+                    Instruction::Prod(..) => file.write_all(b"(prod ")?,
+                    _ => unreachable!(),
+                }
+                match lower {
+                    SumArg::Number(num) => file.write_all(num.to_string().as_bytes())?,
+                    SumArg::Arg(ident) => file.write_all(ident.as_bytes())?,
+                }
+                file.write_all(b" ")?;
+                match upper {
+                    SumArg::Number(num) => file.write_all(num.to_string().as_bytes())?,
+                    SumArg::Arg(ident) => file.write_all(ident.as_bytes())?,
+                }
+                file.write_all(b" ")?;
+                match step {
+                    SumArg::Number(num) => file.write_all(num.to_string().as_bytes())?,
+                    SumArg::Arg(ident) => file.write_all(ident.as_bytes())?,
+                }
+                file.write_all(b" with ")?;
+                file.write_all(it.as_bytes())?;
+                file.write_all(b": ")?;
+                write_expr(file, expr)?;
+                file.write_all(b")")?;
             },
         }
     }
