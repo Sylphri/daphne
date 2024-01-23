@@ -59,9 +59,9 @@ You can use builtin and user-defined functions in expressions.
 
 Function calls have next syntax:
 
-    ident(param, param, param, ...)
+    ident(param1, param2, param3, ...)
 
-Where `ident` is a name of called function and `param` is arbitrary expression.
+Where `ident` is a name of called function and each `param` is arbitrary expression.
 ```example
 -> sin(3.14)
  = 0.001592...
@@ -69,7 +69,7 @@ Where `ident` is a name of called function and `param` is arbitrary expression.
 ### Function Definitions
 To define a new function you need to use keyword `def`.
 
-    def ident(arg, arg, arg, ...) = expr
+    def ident(arg1, arg2, arg3, ...) = expr
 
 Where `ident` is a function name, each `arg` is a name of argument and `expr` is a function body.
 ```example
@@ -102,11 +102,11 @@ Command | Description
 help | Prints help message
 builtin | Prints list of builtin functions
 exit | Exits the program
-save <path> | Saves all defined functions into provided file
-load <path> | Loads functions from provided file
+save path | Saves all defined functions into provided file
+load path | Loads functions from provided file
 list [flags] | Prints list of defined functions
-remove [flats] [ident] ... | Removes provided functions
-plot <ident> | Plots given function
+remove [flags] [ident] ... | Removes provided functions
+plot ident | Plots given function
 
 Yes, you can do plots with this tool.
 
