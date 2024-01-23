@@ -1519,6 +1519,7 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                 println!("[Error]: Can't save functions in a file '{path}': {err}");
                 return true;
             }
+            println!("  Succsessfully saved {count} functions in '{path}'", count = state.functions.len());
             return true;
         },
         "plot" => {
