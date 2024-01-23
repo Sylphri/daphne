@@ -107,3 +107,7 @@ load <path> | Loads functions from provided file
 list [flags] | Prints list of defined functions
 remove [flats] [ident] ... | Removes provided functions
 plot <ident> | Plots given function
+
+Yes, you can do plots with this tool.
+
+![](./plot-demo.gif)
