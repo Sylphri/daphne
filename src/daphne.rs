@@ -1170,11 +1170,15 @@ fn usage() {
     println!("  Expressions are divided into two types: simple expressions <expr> and function definitions <def>.");
     println!();
     println!("<expr>:");
-    println!("  Mathematical expression which consist of operations <op>, numbers <num> and function calls <call>.");
+    println!("  Mathematical expression which consist of operations <op>, numbers <num>, sums <sum>, products <prod> and function calls <call>.");
     println!("   <op>   - One of this basic operations: +, -, *, /, ^");
     println!("   <num>  - Arbitrary real number");
+    println!("   <sum>  - Summarize sequence of expressions <expr>.");
+    println!("     (<sum> lower_bound upper_bound step with <ident>: <expr>) - Where lower_bound is inclusive and upper_bound is exclusive. <ident> after keyword 'with' becomes an iterative variable which contains current value for each iteration.");
+    println!("   <prod> - Multiplies sequence of expressions <expr>.");
+    println!("     (<prod> lower_bound upper_bound step with <ident>: <expr>)");
     println!("   <call> - Call of the defined function. Function call have the next syntax:");
-    println!("     <ident>(<params>) - Where <ident> is the name of the function and <params> is the list of parameters separated by comma. Parameters can be just numbers <num> or expressions <expr>.");
+    println!("     <ident>(<params>) - Where <ident> is the name of the function and <params> is the list of parameters separated by comma. Where each parameter is an expression <expr>.");
     println!();
     println!("<def>:");
     println!("  def <ident>(<args>) = <expr>");
