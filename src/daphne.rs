@@ -79,6 +79,7 @@ fn is_unary(pos: usize, tokens: &Vec<Token>, word: &str) -> bool {
         TokenType::Operation(Operation::RightParen) => false,
         TokenType::Operation(_)           |
         TokenType::Symbol(Symbol::Comma)  |
+        TokenType::Symbol(Symbol::Colon)  |
         TokenType::Symbol(Symbol::Assign) => true,
         _ => false,
     }
