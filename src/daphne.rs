@@ -1261,27 +1261,27 @@ fn print_functions(functions: &HashMap::<String, Func>, full: bool) {
     }
 }
 
-// TODO: In case of an error report line on which it happens
 fn load_file(path: &str) -> Option<Vec<Func>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(err) => {
-            println!("[Error]: Can't load file 'path': {err}");
+            println!("[Error]: Can't load file '{path}': {err}");
             return None;
         },
     };
     let mut contents = String::new();
     if let Err(err) = file.read_to_string(&mut contents) {
-        println!("[Error]: Can't read content of a file 'path': {err}");
+        println!("[Error]: Can't read content of a file '{path}': {err}");
         return None;
     }
     let mut functions = vec![];
-    for line in contents.lines() {
+    for (i, line) in contents.lines().enumerate() {
         let mut line = line.to_string();
         line.push('\n');
         let tokens = match parse(&line) {
             Ok(tokens) => { tokens },
-            Err((pos, err))   => {
+            Err((pos, err)) => {
+                print!("({line_num}) ", line_num = i+1);
                 print_err(&line, &format!("Unknown symbol in word '{err}'"), pos);
                 return None;
             },
@@ -1289,6 +1289,7 @@ fn load_file(path: &str) -> Option<Vec<Func>> {
         let func = match create_function(&tokens) {
             Ok(func) => func,
             Err(err) => {
+                print!("({line_num}) ", line_num = i+1);
                 syntax_err(&line, err);
                 return None;
             }
