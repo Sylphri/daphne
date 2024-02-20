@@ -198,6 +198,7 @@ fn parse(input: &str) -> Result<Vec<Token>, (usize, String)> {
 #[derive(Debug)]
 enum SyntaxErr {
     MissingArg(Token),
+    MissingFuncArg(Token),
     MissingOp(Token, Token),
     MissingLeftParen(Token),
     MissingRightParen(Token),
@@ -467,7 +468,7 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                     }
                     if token.ttype == TokenType::Symbol(Symbol::Comma) {
                         if pos - last <= 0 {
-                            return Err(SyntaxErr::MissingArg(tokens[last].clone()));
+                            return Err(SyntaxErr::MissingFuncArg(tokens[last].clone()));
                         }
                         if parens > 1 { pos += 1; continue; }
                         match create_expr(&tokens[last..pos], &args) {
@@ -475,11 +476,11 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                             Ok(instructions) => params.push(instructions),
                         }
                         if pos >= tokens.len()-1 {
-                            return Err(SyntaxErr::MissingArg(tokens[pos].clone()));
+                            return Err(SyntaxErr::MissingFuncArg(tokens[pos].clone()));
                         }
                         match tokens[pos+1].ttype {
                             TokenType::Operation(Operation::RightParen) => {
-                                return Err(SyntaxErr::MissingArg(tokens[pos].clone()));
+                                return Err(SyntaxErr::MissingFuncArg(tokens[pos].clone()));
                             },
                             _ => {},
                         }
@@ -1044,6 +1045,9 @@ fn syntax_err(input: &str, err: SyntaxErr) {
                 },
                 other => unreachable!("Error in create_expr(): {other:?}"),
             }
+        },
+        SyntaxErr::MissingFuncArg(token) => {
+            print_err(&input, "Missing argument in function call", token.pos);
         },
         SyntaxErr::MissingOp(a, b) => {
             let a_str = match a.ttype {
@@ -1947,7 +1951,6 @@ impl Validator for CmdHelper { }
 impl Highlighter for CmdHelper { }
 impl Helper for CmdHelper { }
 
-// TODO: Add README.md
 fn main() -> rustyline::Result<()> {
     let config = Config::builder()
         .history_ignore_space(true)
