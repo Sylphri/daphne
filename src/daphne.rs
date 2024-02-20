@@ -277,7 +277,8 @@ fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
     if pos >= tokens.len() {
         return Err(SyntaxErr::MissingFuncBody(tokens[pos-1].clone()));
     }
-    let expr = match create_expr(&tokens[pos..], &args) {
+    let mut func_id = 0;
+    let expr = match create_expr(&tokens[pos..], &args, &mut func_id) {
         Ok(instructions) => instructions,
         Err(err) => return Err(err),
     };
@@ -320,13 +321,13 @@ enum Instruction {
     PushOp(Operation),
     PushNumber(f64),
     PushArg(String),
-    FunctionCall(String, Vec<Vec<Instruction>>),
-    BuiltinCall(String, Vec<Vec<Instruction>>),
+    FunctionCall(String, usize, usize),
+    ParamBegin(usize),
     Sum(SumArg, SumArg, SumArg, String, Vec<Instruction>),
     Prod(SumArg, SumArg, SumArg, String, Vec<Instruction>),
 }
 
-fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, SyntaxErr> {
+fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result<Vec<Instruction>, SyntaxErr> {
     let mut parens = vec![];
     let mut instructions = vec![];
     let mut i = 0;
@@ -445,8 +446,9 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                 }
                 pos += 1;
                 let mut last = pos;
-                let mut params = vec![];
+                let mut params_count = 0;
                 let mut parens = 1;
+                *func_id += 1;
                 loop {
                     let token = match tokens.get(pos) {
                         Some(token) => token,
@@ -458,10 +460,16 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                         _ => {},
                     }
                     if parens == 0 {
+                        instructions.push(Instruction::ParamBegin(*func_id));
                         if pos - last > 0 {
-                            match create_expr(&tokens[last..pos], &args) {
+                            match create_expr(&tokens[last..pos], &args, func_id) {
                                 Err(err) => return Err(err),
-                                Ok(instructions) => params.push(instructions),
+                                Ok(mut param_instr) => {
+                                    instructions.push(Instruction::PushOp(Operation::LeftParen));
+                                    instructions.append(&mut param_instr);
+                                    instructions.push(Instruction::PushOp(Operation::RightParen));
+                                    params_count += 1;
+                                }
                             }
                         }
                         break;
@@ -471,9 +479,15 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                             return Err(SyntaxErr::MissingFuncArg(tokens[last].clone()));
                         }
                         if parens > 1 { pos += 1; continue; }
-                        match create_expr(&tokens[last..pos], &args) {
+                        match create_expr(&tokens[last..pos], &args, func_id) {
                             Err(err) => return Err(err),
-                            Ok(instructions) => params.push(instructions),
+                            Ok(mut param_instr) => {
+                                instructions.push(Instruction::ParamBegin(*func_id));
+                                instructions.push(Instruction::PushOp(Operation::LeftParen));
+                                instructions.append(&mut param_instr);
+                                instructions.push(Instruction::PushOp(Operation::RightParen));
+                                params_count += 1;
+                            }
                         }
                         if pos >= tokens.len()-1 {
                             return Err(SyntaxErr::MissingFuncArg(tokens[pos].clone()));
@@ -488,11 +502,8 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                     }
                     pos += 1;
                 }
-                if BUILTIN_FUNCS.contains(&ident.as_str()) {
-                    instructions.push(Instruction::BuiltinCall(ident.clone(), params));
-                } else {
-                    instructions.push(Instruction::FunctionCall(ident.clone(), params));
-                }
+                instructions.push(Instruction::FunctionCall(ident.clone(), params_count, *func_id));
+                *func_id -= 1;
                 i = pos;
             },
             // TODO: Add support for expressions in bounds and step
@@ -611,7 +622,8 @@ fn create_expr(tokens: &[Token], args: &[String]) -> Result<Vec<Instruction>, Sy
                 }
                 let mut args = args.to_vec();
                 args.push(it.to_string());
-                let expr = match create_expr(&tokens[i+1..pos], &args) {
+                let mut func_id = 0;
+                let expr = match create_expr(&tokens[i+1..pos], &args, &mut func_id) {
                     Err(err) => return Err(err),
                     Ok(instructions) => instructions,
                 };
@@ -889,7 +901,25 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                 }
                 unreachable!("Error in create_expr()");
             },
-            Instruction::FunctionCall(ident, fparams) => {
+            Instruction::ParamBegin(_) => {},
+            Instruction::FunctionCall(ident, params_count, _id) => {
+                let params_count = *params_count;
+                if BUILTIN_FUNCS.contains(&ident.as_str()) {
+                    let mut params = vec![0f64; params_count];
+                    for i in 0..params_count {
+                        let param = numbers.pop().expect("In stack must be enough numbers for function call");
+                        params[params_count - 1 - i] = param;
+                    }
+                    match builtin(&ident, &params) {
+                        Ok(res) => {
+                            numbers.push(res);
+                            i += 1;
+                            continue;
+                        },
+                        Err(err) => return Err(err),
+                    }
+                }
+
                 let called_func = match functions.get(ident) {
                     Some(func) => func,
                     None => return Err(EvalErr::UnknownFunction(ident.clone())),
@@ -897,45 +927,16 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                 if *ident == func.ident {
                     return Err(EvalErr::RecursiveFunction);
                 }
-                if called_func.args.len() != fparams.len() {
-                    return Err(EvalErr::ParamsCountDontMatch(called_func.ident.clone(), called_func.args.len(), fparams.len()));
+                if called_func.args.len() != params_count {
+                    return Err(EvalErr::ParamsCountDontMatch(called_func.ident.clone(), called_func.args.len(), params_count));
                 }
-                let mut eval_params = vec![];
-                for param in fparams {
-                    let temp = Func {
-                        ident: "temp".to_string(),
-                        args: func.args.clone(),
-                        expr: param.to_vec(),
-                    };
-                    match evaluate(&functions, &temp, &params) {
-                        Ok(res) => eval_params.push(res),
-                        Err(err) => return Err(err),
-                    }
+                let mut params = vec![0f64; params_count];
+                for i in 0..params_count {
+                    let param = numbers.pop().expect("In stack must be enough numbers for function call");
+                    params[params_count - 1 - i] = param;
                 }
-                match evaluate(&functions, &called_func, &eval_params) {
+                match evaluate(&functions, &called_func, &params) {
                     Ok(res) => numbers.push(res),
-                    Err(err) => return Err(err),
-                }
-            },
-            Instruction::BuiltinCall(ident, fparams) => {
-                let mut eval_params = vec![];
-                for param in fparams {
-                    let temp = Func {
-                        ident: "temp".to_string(),
-                        args: func.args.clone(),
-                        expr: param.to_vec(),
-                    };
-                    match evaluate(&functions, &temp, &params) {
-                        Ok(res) => eval_params.push(res),
-                        Err(err) => return Err(err),
-                    }
-                }
-                match builtin(&ident, &eval_params) {
-                    Ok(res) => {
-                        numbers.push(res);
-                        i += 1;
-                        continue;
-                    },
                     Err(err) => return Err(err),
                 }
             },
@@ -1322,21 +1323,11 @@ fn save_file(functions: &HashMap<String, Func>, path: &str) -> std::io::Result<(
     Ok(())
 }
 
-fn write_func_call<T: Write>(file: &mut T, ident: &str, params: &Vec<Vec<Instruction>>) -> std::io::Result<()> {
-    file.write_all(ident.as_bytes())?;
-    file.write_all(b"(")?;
-    for (i, expr) in params.iter().enumerate() {
-        write_expr(file, &expr)?;
-        if i != params.len()-1 {
-            file.write_all(b", ")?;
-        }
-    }
-    file.write_all(b")")?;
-    Ok(())
-}
-
-fn write_expr<T: Write>(file: &mut T, expr: &Vec<Instruction>) -> std::io::Result<()> {
-    for instr in expr {
+fn write_expr<T: Write>(file: &mut T, expr: &[Instruction]) -> std::io::Result<()> {
+    let mut i = 0;
+    let mut params_begin = 0;
+    'outer: while i < expr.len() {
+        let instr = &expr[i];
         match instr {
             Instruction::PushNumber(num) => file.write_all(num.to_string().as_bytes())?,
             Instruction::PushOp(op) => {
@@ -1351,11 +1342,45 @@ fn write_expr<T: Write>(file: &mut T, expr: &Vec<Instruction>) -> std::io::Resul
                 }
             },
             Instruction::PushArg(arg) => file.write_all(arg.as_bytes())?,
-            Instruction::FunctionCall(ident, params) => {
-                write_func_call(file, &ident, &params)?;
-            },
-            Instruction::BuiltinCall(ident, params) => {
-                write_func_call(file, &ident, &params)?;
+            Instruction::ParamBegin(func_id) => {
+                params_begin = i+1;
+                loop {
+                    match expr[i] {
+                        Instruction::FunctionCall(_, _, id) => {
+                            if id == *func_id {
+                                continue 'outer;
+                            }
+                        },
+                        _ => {},
+                    }
+                    i += 1;
+                }
+            }
+            Instruction::FunctionCall(ident, params_count, id) => {
+                let params_count = *params_count;
+                file.write_all(ident.as_bytes())?;
+                file.write_all(b"(")?;
+                let mut begin = params_begin+1;
+                let mut count = 0;
+                for j in params_begin..i-1 {
+                    match expr[j] {
+                        Instruction::ParamBegin(func_id) => {
+                            if *id == func_id {
+                                write_expr(file, &expr[begin..j-1])?;
+                                begin = j + 2;
+                                count += 1;
+                                if count < params_count {
+                                    file.write_all(b", ")?;
+                                }
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+                if begin < i {
+                    write_expr(file, &expr[begin..i-1])?;
+                }
+                file.write_all(b")")?;
             },
             op @ Instruction::Sum(lower, upper, step, it, expr)  |
             op @ Instruction::Prod(lower, upper, step, it, expr) => {
@@ -1385,6 +1410,7 @@ fn write_expr<T: Write>(file: &mut T, expr: &Vec<Instruction>) -> std::io::Resul
                 file.write_all(b")")?;
             },
         }
+        i += 1;
     }
     Ok(())
 }
@@ -1544,7 +1570,11 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                 let builtin = Func {
                     ident: ident.to_string(),
                     args: vec!["x".to_string()],
-                    expr: vec![Instruction::BuiltinCall(ident.to_string(), vec![vec![Instruction::PushArg("x".to_string())]])],
+                    expr: vec![
+                        Instruction::ParamBegin(0),
+                        Instruction::PushArg("x".to_string()),
+                        Instruction::FunctionCall(ident.to_string(), 1, 0),
+                    ],
                 };
                 match plot_mode(state, &builtin, 0.0, 0.0, 10.0, 10.0) {
                     Err(err) => println!("[Error]: {err}"),
@@ -1644,7 +1674,8 @@ fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Ins
             },
         }
     } else {
-        match create_expr(&tokens, &vec![]) {
+        let mut func_id = 0;
+        match create_expr(&tokens, &vec![], &mut func_id) {
             Ok(expr) => return Some(expr),
             Err(err) => {
                 syntax_err(&input, err);
