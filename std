@@ -1,6 +1,6 @@
 def circumference(r) = 2*Pi()*r
 def arc_length_deg(r, a) = r*degToRad(a)
-def fact_impl(x) = (prod 1 x 1 with it: it)
+def fact_impl(x) = (prod(1, x, 1) with it: it)
 def circle_area(r) = Pi()*r*r
 def exp(x) = E()^x
 def triangle_area(b, h) = b*h/2

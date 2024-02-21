@@ -222,7 +222,7 @@ enum SyntaxErr {
     UnexpectedComma(Token),
     UnexpectedWith(Token),
     UnexpectedColon(Token),
-    UnknownArg(Token),
+    // UnknownArg(Token),
 }
 
 fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
@@ -310,11 +310,11 @@ fn binary_op_check(pos: usize, tokens: &[Token]) -> Result<(), Token> {
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-enum SumArg {
-    Number(f64),
-    Arg(String),
-}
+// #[derive(Debug, Clone)]
+// enum SumArg {
+//     Number(f64),
+//     Arg(String),
+// }
 
 #[derive(Debug, Clone)]
 enum Instruction {
@@ -323,8 +323,9 @@ enum Instruction {
     PushArg(String),
     FunctionCall(String, usize, usize),
     ParamBegin(usize),
-    Sum(SumArg, SumArg, SumArg, String, Vec<Instruction>),
-    Prod(SumArg, SumArg, SumArg, String, Vec<Instruction>),
+    Sum(String, usize),
+    Prod(String, usize),
+    Jump(String, usize),
 }
 
 fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result<Vec<Instruction>, SyntaxErr> {
@@ -506,7 +507,6 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                 *func_id -= 1;
                 i = pos;
             },
-            // TODO: Add support for expressions in bounds and step
             op @ TokenType::Keyword(Keyword::Prod) |
             op @ TokenType::Keyword(Keyword::Sum)  => {
                 if instructions.len() == 0 || tokens[i-1].ttype != TokenType::Operation(Operation::LeftParen) {
@@ -514,58 +514,78 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                 }
                 parens.pop().unwrap();
                 instructions.pop().unwrap();
-                i += 1;
-                let lower = match tokens.get(i) {
-                    Some(token) => {
-                        match &token.ttype {
-                            TokenType::Number(num) => SumArg::Number(*num),
-                            TokenType::Ident(ident) => {
-                                if let Some(_) = args.iter().find(|arg| *arg == ident) {
-                                    SumArg::Arg(ident.to_string())
-                                } else {
-                                    return Err(SyntaxErr::UnknownArg(tokens[i].clone()));
+                let mut pos = i + 1;
+                if pos >= tokens.len() {
+                    return Err(SyntaxErr::MissingLeftParen(tokens[i].clone()));
+                }
+                pos += 1;
+                let mut last = pos;
+                let mut params_count = 0;
+                let mut parens = 1;
+                *func_id += 1;
+                loop {
+                    if params_count >= 3 {
+                        return Err(SyntaxErr::UnexpectedComma(tokens[i].clone()));
+                    }
+                    let token = match tokens.get(pos) {
+                        Some(token) => token,
+                        None => return Err(SyntaxErr::MissingRightParen(tokens[i+1].clone())),
+                    };
+                    match token.ttype {
+                        TokenType::Operation(Operation::LeftParen) => parens += 1,
+                        TokenType::Operation(Operation::RightParen) => parens -= 1,
+                        _ => {},
+                    }
+                    if parens == 0 {
+                        instructions.push(Instruction::ParamBegin(*func_id));
+                        if pos - last > 0 {
+                            match create_expr(&tokens[last..pos], &args, func_id) {
+                                Err(err) => return Err(err),
+                                Ok(mut param_instr) => {
+                                    instructions.push(Instruction::PushOp(Operation::LeftParen));
+                                    instructions.append(&mut param_instr);
+                                    instructions.push(Instruction::PushOp(Operation::RightParen));
+                                    params_count += 1;
                                 }
-                            },
-                            _ => return Err(SyntaxErr::MissingLowerBound(tokens[i-1].clone())),
+                            }
                         }
-                    },
-                    None => return Err(SyntaxErr::MissingLowerBound(tokens[i-1].clone())),
-                };
-                i += 1;
-                let upper = match tokens.get(i) {
-                    Some(token) => {
-                        match &token.ttype {
-                            TokenType::Number(num) => SumArg::Number(*num),
-                            TokenType::Ident(ident) => {
-                                if let Some(_) = args.iter().find(|arg| *arg == ident) {
-                                    SumArg::Arg(ident.to_string())
-                                } else {
-                                    return Err(SyntaxErr::UnknownArg(tokens[i].clone()));
-                                }
-                            },
-                            _ => return Err(SyntaxErr::MissingUpperBound(tokens[i-1].clone())),
+                        break;
+                    }
+                    if token.ttype == TokenType::Symbol(Symbol::Comma) {
+                        if pos - last <= 0 {
+                            return Err(SyntaxErr::MissingFuncArg(tokens[last].clone()));
                         }
-                    },
-                    None => return Err(SyntaxErr::MissingUpperBound(tokens[i-1].clone())),
-                };
-                i += 1;
-                let step = match tokens.get(i) {
-                    Some(token) => {
-                        match &token.ttype {
-                            TokenType::Number(num) => SumArg::Number(*num),
-                            TokenType::Ident(ident) => {
-                                if let Some(_) = args.iter().find(|arg| *arg == ident) {
-                                    SumArg::Arg(ident.to_string())
-                                } else {
-                                    return Err(SyntaxErr::UnknownArg(tokens[i].clone()));
-                                }
-                            },
-                            _ => return Err(SyntaxErr::MissingStep(tokens[i-1].clone())),
+                        if parens > 1 { pos += 1; continue; }
+                        match create_expr(&tokens[last..pos], &args, func_id) {
+                            Err(err) => return Err(err),
+                            Ok(mut param_instr) => {
+                                instructions.push(Instruction::ParamBegin(*func_id));
+                                instructions.push(Instruction::PushOp(Operation::LeftParen));
+                                instructions.append(&mut param_instr);
+                                instructions.push(Instruction::PushOp(Operation::RightParen));
+                                params_count += 1;
+                            }
                         }
-                    },
-                    None => return Err(SyntaxErr::MissingStep(tokens[i-1].clone())),
-                };
-                i += 1;
+                        if pos >= tokens.len()-1 {
+                            return Err(SyntaxErr::MissingFuncArg(tokens[pos].clone()));
+                        }
+                        match tokens[pos+1].ttype {
+                            TokenType::Operation(Operation::RightParen) => {
+                                return Err(SyntaxErr::MissingFuncArg(tokens[pos].clone()));
+                            },
+                            _ => {},
+                        }
+                        last = pos + 1;
+                    }
+                    pos += 1;
+                }
+                i = pos + 1;
+                match params_count {
+                    0 => return Err(SyntaxErr::MissingLowerBound(tokens[i-1].clone())),
+                    1 => return Err(SyntaxErr::MissingUpperBound(tokens[i-1].clone())),
+                    2 => return Err(SyntaxErr::MissingStep(tokens[i-1].clone())),
+                    _ => {},
+                }
                 match tokens.get(i) {
                     Some(token) => {
                         match token.ttype {
@@ -622,17 +642,20 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                 }
                 let mut args = args.to_vec();
                 args.push(it.to_string());
-                let mut func_id = 0;
-                let expr = match create_expr(&tokens[i+1..pos], &args, &mut func_id) {
+                let mut expr = match create_expr(&tokens[i+1..pos], &args, func_id) {
                     Err(err) => return Err(err),
                     Ok(instructions) => instructions,
                 };
                 match op {
-                    TokenType::Keyword(Keyword::Sum) => 
-                        instructions.push(Instruction::Sum(lower, upper, step, it.to_string(), expr)), 
-                    TokenType::Keyword(Keyword::Prod) => instructions.push(Instruction::Prod(lower, upper, step, it.to_string(), expr)), 
+                    TokenType::Keyword(Keyword::Sum) => instructions.push(Instruction::Sum(it.to_string(), *func_id)), 
+                    TokenType::Keyword(Keyword::Prod) => instructions.push(Instruction::Prod(it.to_string(), *func_id)), 
                     _ => unreachable!(),
                 }
+                let begin = instructions.len();
+                instructions.push(Instruction::PushOp(Operation::LeftParen));
+                instructions.append(&mut expr);
+                instructions.push(Instruction::PushOp(Operation::RightParen));
+                instructions.push(Instruction::Jump(it.to_string(), begin));
                 i = pos+1;
             },
             TokenType::Symbol(Symbol::Assign) => {
@@ -860,6 +883,13 @@ fn builtin(ident: &str, params: &Vec<f64>) -> Result<f64, EvalErr> {
 fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -> Result<f64, EvalErr> {
     let mut numbers = vec![];
     let mut operations = vec![];
+    let mut iters = HashMap::<String, f64>::new();
+    let mut acc = 0.0;
+    enum AccType {
+        Sum,
+        Prod,
+    }
+    let mut acc_type = AccType::Sum;
     let mut i = 0;
     'outer: while i < func.expr.len() {
         let instr = &func.expr[i];
@@ -898,6 +928,14 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                         i += 1;
                         continue 'outer;
                     }
+                }
+                match iters.get(arg) {
+                    Some(val) => {
+                        numbers.push(*val);
+                        i += 1;
+                        continue 'outer;
+                    },
+                    None => {},
                 }
                 unreachable!("Error in create_expr()");
             },
@@ -940,60 +978,39 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                     Err(err) => return Err(err),
                 }
             },
-            op @ Instruction::Sum(lower, upper, step, it_ident, expr)  |
-            op @ Instruction::Prod(lower, upper, step, it_ident, expr) => {
-                let lower = match lower {
-                    SumArg::Number(num) => *num,
-                    SumArg::Arg(ident) => {
-                        let idx = func.args.iter().position(|arg| *arg == *ident).expect("Error in create_expr()");
-                        params[idx]
-                    },
-                };
-                let upper = match upper {
-                    SumArg::Number(num) => *num,
-                    SumArg::Arg(ident) => {
-                        let idx = func.args.iter().position(|arg| *arg == *ident).expect("Error in create_expr()");
-                        params[idx]
-                    },
-                };
-                let step = match step {
-                    SumArg::Number(num) => *num,
-                    SumArg::Arg(ident) => {
-                        let idx = func.args.iter().position(|arg| *arg == *ident).expect("Error in create_expr()");
-                        params[idx]
-                    },
-                };
-                let mut result = match op {
-                    Instruction::Sum(..) => 0.0,
-                    Instruction::Prod(..) => 1.0,
-                    _ => unreachable!(),
-                };
-                let mut it = lower;
-                let mut args = func.args.clone();
-                args.push(it_ident.to_string());
-                let mut params = params.clone();
-                params.push(0.0);
-                let temp = Func {
-                    ident: "sum".to_string(),
-                    args: args,
-                    expr: expr.to_vec(),
-                };
-                while it < upper {
-                    params.pop().unwrap();
-                    params.push(it);
-                    match evaluate(&functions, &temp, &params) {
-                        Ok(res) => {
-                            match op {
-                                Instruction::Sum(..) => result += res,
-                                Instruction::Prod(..) => result *= res,
-                                _ => unreachable!(),
-                            };
-                        },
-                        Err(err) => return Err(err),
-                    }
-                    it += step;
+            Instruction::Sum(it_ident, _id) => {
+                assert!(numbers.len() >= 3);
+                let begin = numbers[numbers.len()-3];
+                iters.insert(it_ident.clone(), begin);
+                acc = 0.0;
+                acc_type = AccType::Sum;
+            },
+            Instruction::Prod(it_ident, _id) => {
+                assert!(numbers.len() >= 3);
+                let begin = numbers[numbers.len()-3];
+                iters.insert(it_ident.clone(), begin);
+                acc = 1.0;
+                acc_type = AccType::Prod;
+            },
+            Instruction::Jump(it_ident, pos) => {
+                assert!(numbers.len() >= 1);
+                let it = numbers.pop().unwrap();
+                let step = numbers[numbers.len()-1];
+                let end = numbers[numbers.len()-2];
+                match acc_type {
+                    AccType::Sum => acc += it,
+                    AccType::Prod => acc *= it,
                 }
-                numbers.push(result);
+                if it + step < end {
+                    iters.insert(it_ident.to_string(), it+step);
+                    i = *pos;
+                    continue;
+                }
+                numbers.pop().unwrap();
+                numbers.pop().unwrap();
+                numbers.pop().unwrap();
+                numbers.push(acc);
+                iters.remove(it_ident);
             },
         }
         i += 1;
@@ -1143,14 +1160,14 @@ fn syntax_err(input: &str, err: SyntaxErr) {
                 _ => unreachable!("Error in create_expr()"),
             }
         },
-        SyntaxErr::UnknownArg(token) => {
-            match token.ttype {
-                TokenType::Ident(ident) => {
-                    print_err(&input, &format!("Unknown argument '{ident}'"), token.pos);
-                },
-                _ => unreachable!("Error in create_expr()"),
-            }
-        },
+        // SyntaxErr::UnknownArg(token) => {
+        //     match token.ttype {
+        //         TokenType::Ident(ident) => {
+        //             print_err(&input, &format!("Unknown argument '{ident}'"), token.pos);
+        //         },
+        //         _ => unreachable!("Error in create_expr()"),
+        //     }
+        // },
     }
 }
 
@@ -1354,6 +1371,12 @@ fn write_expr<T: Write>(file: &mut T, expr: &[Instruction]) -> std::io::Result<(
                                 continue 'outer;
                             }
                         },
+                        Instruction::Sum(_, id) |
+                        Instruction::Prod(_, id) => {
+                            if id == *func_id {
+                                continue 'outer;
+                            }
+                        },
                         _ => {},
                     }
                     i += 1;
@@ -1385,31 +1408,37 @@ fn write_expr<T: Write>(file: &mut T, expr: &[Instruction]) -> std::io::Result<(
                 }
                 file.write_all(b")")?;
             },
-            op @ Instruction::Sum(lower, upper, step, it, expr)  |
-            op @ Instruction::Prod(lower, upper, step, it, expr) => {
+            op @ Instruction::Sum(it_ident, id)  |
+            op @ Instruction::Prod(it_ident, id) => {
                 match op {
-                    Instruction::Sum(..) => file.write_all(b"(sum ")?,
-                    Instruction::Prod(..) => file.write_all(b"(prod ")?,
+                    Instruction::Sum(_, _) => file.write_all(b"(sum(")?,
+                    Instruction::Prod(_, _) => file.write_all(b"(prod(")?,
                     _ => unreachable!(),
                 }
-                match lower {
-                    SumArg::Number(num) => file.write_all(num.to_string().as_bytes())?,
-                    SumArg::Arg(ident) => file.write_all(ident.as_bytes())?,
+                let params_count = 3;
+                let mut begin = params_begin+1;
+                let mut count = 0;
+                for j in params_begin..i-1 {
+                    match expr[j] {
+                        Instruction::ParamBegin(func_id) => {
+                            if *id == func_id {
+                                write_expr(file, &expr[begin..j-1])?;
+                                begin = j + 2;
+                                count += 1;
+                                if count < params_count {
+                                    file.write_all(b", ")?;
+                                }
+                            }
+                        },
+                        _ => {},
+                    }
                 }
-                file.write_all(b" ")?;
-                match upper {
-                    SumArg::Number(num) => file.write_all(num.to_string().as_bytes())?,
-                    SumArg::Arg(ident) => file.write_all(ident.as_bytes())?,
+                if begin < i {
+                    write_expr(file, &expr[begin..i-1])?;
                 }
-                file.write_all(b" ")?;
-                match step {
-                    SumArg::Number(num) => file.write_all(num.to_string().as_bytes())?,
-                    SumArg::Arg(ident) => file.write_all(ident.as_bytes())?,
-                }
-                file.write_all(b" with ")?;
-                file.write_all(it.as_bytes())?;
-                file.write_all(b": ")?;
-                write_expr(file, expr)?;
+                file.write_all(format!(") with {it_ident}: ").as_bytes())?;
+            },
+            Instruction::Jump(_it_ident, _pos) => {
                 file.write_all(b")")?;
             },
         }
