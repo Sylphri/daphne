@@ -1192,7 +1192,7 @@ fn usage() {
     println!("<ident> | <arg>:");
     println!("  Names of functions and their arguments may consist of latin latters(A-Z|a-z), digits(0-9) and underscore(_).");
     println!();
-    assert!(COMMANDS.len() == 8);
+    assert!(COMMANDS.len() == 10);
     println!("<command>:");
     println!("  help         - Prints this message");
     println!("  builtin      - Prints list of builtin functions");
@@ -1200,15 +1200,18 @@ fn usage() {
     println!("  save <path>  - Saves all defined functions into file");
     println!("  load <path>  - Loads functions from provided file");
     println!("  list [flags] - Prints list of defined functions");
-    println!("    flags: -l - Prints full definitions");
+    println!("    flags: -l  - Prints full definitions");
     println!("  remove [flags] [ident] ... - Removes provided functions");
-    println!("    flags: -a - Removes all defined functions");
+    println!("    flags: -a  - Removes all defined functions");
     println!("  plot <ident> - Plots given function");
     println!("    controls:");
     println!("      arrows - Move around");
     println!("      +/-    - Zoom in and out");
     println!("      q      - Exit plot mode");
     println!("      j      - Jump to specified position");
+    println!();
+    println!("  tokens <expr> - Prints tokens of expression");
+    println!("  instr  <expr> - Prints instructions of expression");
     println!();
 }
 
@@ -1441,7 +1444,7 @@ fn readline(editor: &mut Editor<CmdHelper, DefaultHistory>, message: &str) -> Op
 fn exec_command(state: &mut State, input: &str) -> bool {
     let command = input.split_ascii_whitespace().next().expect("There must be at least a command in input");
     let mut args = input.split_ascii_whitespace().skip(1);
-    assert!(COMMANDS.len() == 8);
+    assert!(COMMANDS.len() == 10);
     match command {
         "exit" => {
             if let Some(arg) = args.next() {
@@ -1631,6 +1634,59 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             println!("  Successfully removed {} functions", funcs.len());
             return true;
         },
+        "tokens" => {
+            let mut expr = args.collect::<Vec<_>>().join(" ");
+            expr.push('\n');
+            let tokens = match parse(&expr) {
+                Ok(tokens) => tokens,
+                Err((pos, err)) => {
+                    print_err(&expr, &format!("Unknown symbol in word '{err}'"), pos);
+                    return true;
+                },
+            };
+            println!("Tokens: [");
+            for token in tokens {
+                println!("  {{ ttype: {:?}, pos: {} }},", token.ttype, token.pos);
+            }
+            println!("]");
+            return true;
+        },
+        "instr" => {
+            let mut expr = args.collect::<Vec<_>>().join(" ");
+            expr.push('\n');
+            let tokens = match parse(&expr) {
+                Ok(tokens) => tokens,
+                Err((pos, err)) => {
+                    print_err(&expr, &format!("Unknown symbol in word '{err}'"), pos);
+                    return true;
+                },
+            };
+            let is_def = tokens.len() > 0 && tokens[0].ttype == TokenType::Keyword(Keyword::Def);
+            let instr = if is_def {
+                match create_function(&tokens) {
+                    Ok(func) => func.expr,
+                    Err(err) => {
+                        syntax_err(&expr, err);
+                        return true;
+                    },
+                }
+            } else {
+                let mut func_id = 0;
+                match create_expr(&tokens, &[], &mut func_id) {
+                    Ok(tokens) => tokens,
+                    Err(err) => {
+                        syntax_err(&expr, err);
+                        return true;
+                    },
+                }
+            };
+            println!("Instructions: [");
+            for ins in instr {
+                println!("  {:?},", ins);
+            }
+            println!("]");
+            return true;
+        }
         _ => return false,
     }
 }
@@ -1910,7 +1966,7 @@ fn print_plot(functions: &HashMap<String, Func>, function: &Func, xmin: f64, xma
     Ok(())
 }
 
-const COMMANDS: [&str; 8] = [
+const COMMANDS: [&str; 10] = [
     "help",
     "builtin",
     "exit",
@@ -1919,6 +1975,8 @@ const COMMANDS: [&str; 8] = [
     "list",
     "remove",
     "plot",
+    "tokens",
+    "instr",
 ];
 
 struct CmdHelper {
