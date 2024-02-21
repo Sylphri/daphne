@@ -222,7 +222,6 @@ enum SyntaxErr {
     UnexpectedComma(Token),
     UnexpectedWith(Token),
     UnexpectedColon(Token),
-    // UnknownArg(Token),
 }
 
 fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
@@ -310,11 +309,11 @@ fn binary_op_check(pos: usize, tokens: &[Token]) -> Result<(), Token> {
     Ok(())
 }
 
-// #[derive(Debug, Clone)]
-// enum SumArg {
-//     Number(f64),
-//     Arg(String),
-// }
+#[derive(Debug, Clone)]
+enum AccType {
+    Sum,
+    Prod,
+}
 
 #[derive(Debug, Clone)]
 enum Instruction {
@@ -325,7 +324,7 @@ enum Instruction {
     ParamBegin(usize),
     Sum(String, usize),
     Prod(String, usize),
-    Jump(String, usize),
+    Jump(AccType, usize),
 }
 
 fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result<Vec<Instruction>, SyntaxErr> {
@@ -655,7 +654,11 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                 instructions.push(Instruction::PushOp(Operation::LeftParen));
                 instructions.append(&mut expr);
                 instructions.push(Instruction::PushOp(Operation::RightParen));
-                instructions.push(Instruction::Jump(it.to_string(), begin));
+                match op {
+                    TokenType::Keyword(Keyword::Sum) => instructions.push(Instruction::Jump(AccType::Sum, instructions.len() - begin)),
+                    TokenType::Keyword(Keyword::Prod) => instructions.push(Instruction::Jump(AccType::Prod, instructions.len() - begin)),
+                    _ => unreachable!(),
+                }
                 i = pos+1;
             },
             TokenType::Symbol(Symbol::Assign) => {
@@ -883,13 +886,7 @@ fn builtin(ident: &str, params: &Vec<f64>) -> Result<f64, EvalErr> {
 fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -> Result<f64, EvalErr> {
     let mut numbers = vec![];
     let mut operations = vec![];
-    let mut iters = HashMap::<String, f64>::new();
-    let mut acc = 0.0;
-    enum AccType {
-        Sum,
-        Prod,
-    }
-    let mut acc_type = AccType::Sum;
+    let mut iters: Vec<(String, f64)> = vec![];
     let mut i = 0;
     'outer: while i < func.expr.len() {
         let instr = &func.expr[i];
@@ -929,13 +926,12 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                         continue 'outer;
                     }
                 }
-                match iters.get(arg) {
-                    Some(val) => {
-                        numbers.push(*val);
+                for iter in &iters {
+                    if *arg == *iter.0 {
+                        numbers.push(iter.1);
                         i += 1;
                         continue 'outer;
-                    },
-                    None => {},
+                    }
                 }
                 unreachable!("Error in create_expr()");
             },
@@ -981,36 +977,43 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
             Instruction::Sum(it_ident, _id) => {
                 assert!(numbers.len() >= 3);
                 let begin = numbers[numbers.len()-3];
-                iters.insert(it_ident.clone(), begin);
-                acc = 0.0;
-                acc_type = AccType::Sum;
+                iters.push((it_ident.clone(), begin));
+                numbers.push(0.0);
             },
             Instruction::Prod(it_ident, _id) => {
                 assert!(numbers.len() >= 3);
                 let begin = numbers[numbers.len()-3];
-                iters.insert(it_ident.clone(), begin);
-                acc = 1.0;
-                acc_type = AccType::Prod;
+                iters.push((it_ident.clone(), begin));
+                numbers.push(1.0);
             },
-            Instruction::Jump(it_ident, pos) => {
-                assert!(numbers.len() >= 1);
+            Instruction::Jump(instr_type, pos) => {
                 let it = numbers.pop().unwrap();
-                let step = numbers[numbers.len()-1];
-                let end = numbers[numbers.len()-2];
-                match acc_type {
-                    AccType::Sum => acc += it,
-                    AccType::Prod => acc *= it,
+                let count = numbers.len();
+                let step = numbers[count-2];
+                let end = numbers[count-3];
+                let begin = numbers[count-4];
+                match instr_type {
+                    AccType::Sum => numbers[count-1] += it,
+                    AccType::Prod => numbers[count-1] *= it,
                 }
-                if it + step < end {
-                    iters.insert(it_ident.to_string(), it+step);
-                    i = *pos;
+                let count = iters.len();
+                if iters[count-1].1 + step < end {
+                    iters[count-1].1 += step;
+                    i = i - *pos;
                     continue;
                 }
+                let mut res = numbers.pop().unwrap();
+                if begin >= end {
+                    match instr_type {
+                        AccType::Sum => res = 0.0,
+                        AccType::Prod => res = 1.0,
+                    }
+                }
                 numbers.pop().unwrap();
                 numbers.pop().unwrap();
                 numbers.pop().unwrap();
-                numbers.push(acc);
-                iters.remove(it_ident);
+                numbers.push(res);
+                iters.pop().unwrap();
             },
         }
         i += 1;
@@ -1160,14 +1163,6 @@ fn syntax_err(input: &str, err: SyntaxErr) {
                 _ => unreachable!("Error in create_expr()"),
             }
         },
-        // SyntaxErr::UnknownArg(token) => {
-        //     match token.ttype {
-        //         TokenType::Ident(ident) => {
-        //             print_err(&input, &format!("Unknown argument '{ident}'"), token.pos);
-        //         },
-        //         _ => unreachable!("Error in create_expr()"),
-        //     }
-        // },
     }
 }
 
