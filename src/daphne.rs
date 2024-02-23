@@ -224,7 +224,7 @@ enum SyntaxErr {
     UnexpectedColon(Token),
 }
 
-fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
+fn compile_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
     assert!(tokens.len() > 0, "There must be at least one token");
     assert!(tokens[0].ttype == TokenType::Keyword(Keyword::Def), "There must be 'def' keyword at begin of function definition");
     let mut pos = 1;
@@ -277,7 +277,7 @@ fn create_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
         return Err(SyntaxErr::MissingFuncBody(tokens[pos-1].clone()));
     }
     let mut func_id = 0;
-    let expr = match create_expr(&tokens[pos..], &args, &mut func_id) {
+    let expr = match compile_expr(&tokens[pos..], &args, &mut func_id) {
         Ok(instructions) => instructions,
         Err(err) => return Err(err),
     };
@@ -327,7 +327,7 @@ enum Instruction {
     Jump(AccType, usize),
 }
 
-fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result<Vec<Instruction>, SyntaxErr> {
+fn compile_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result<Vec<Instruction>, SyntaxErr> {
     let mut parens = vec![];
     let mut instructions = vec![];
     let mut i = 0;
@@ -462,7 +462,7 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                     if parens == 0 {
                         instructions.push(Instruction::ParamBegin(*func_id));
                         if pos - last > 0 {
-                            match create_expr(&tokens[last..pos], &args, func_id) {
+                            match compile_expr(&tokens[last..pos], &args, func_id) {
                                 Err(err) => return Err(err),
                                 Ok(mut param_instr) => {
                                     instructions.push(Instruction::PushOp(Operation::LeftParen));
@@ -479,7 +479,7 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                             return Err(SyntaxErr::MissingFuncArg(tokens[last].clone()));
                         }
                         if parens > 1 { pos += 1; continue; }
-                        match create_expr(&tokens[last..pos], &args, func_id) {
+                        match compile_expr(&tokens[last..pos], &args, func_id) {
                             Err(err) => return Err(err),
                             Ok(mut param_instr) => {
                                 instructions.push(Instruction::ParamBegin(*func_id));
@@ -538,7 +538,7 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                     if parens == 0 {
                         instructions.push(Instruction::ParamBegin(*func_id));
                         if pos - last > 0 {
-                            match create_expr(&tokens[last..pos], &args, func_id) {
+                            match compile_expr(&tokens[last..pos], &args, func_id) {
                                 Err(err) => return Err(err),
                                 Ok(mut param_instr) => {
                                     instructions.push(Instruction::PushOp(Operation::LeftParen));
@@ -555,7 +555,7 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                             return Err(SyntaxErr::MissingFuncArg(tokens[last].clone()));
                         }
                         if parens > 1 { pos += 1; continue; }
-                        match create_expr(&tokens[last..pos], &args, func_id) {
+                        match compile_expr(&tokens[last..pos], &args, func_id) {
                             Err(err) => return Err(err),
                             Ok(mut param_instr) => {
                                 instructions.push(Instruction::ParamBegin(*func_id));
@@ -641,7 +641,7 @@ fn create_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Result
                 }
                 let mut args = args.to_vec();
                 args.push(it.to_string());
-                let mut expr = match create_expr(&tokens[i+1..pos], &args, func_id) {
+                let mut expr = match compile_expr(&tokens[i+1..pos], &args, func_id) {
                     Err(err) => return Err(err),
                     Ok(instructions) => instructions,
                 };
@@ -933,7 +933,7 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
                         continue 'outer;
                     }
                 }
-                unreachable!("Error in create_expr()");
+                unreachable!("Error in compile_expr()");
             },
             Instruction::ParamBegin(_) => {},
             Instruction::FunctionCall(ident, params_count, _id) => {
@@ -1064,7 +1064,7 @@ fn syntax_err(input: &str, err: SyntaxErr) {
                     };
                     print_err(&input, &format!("Missing argument for '{op_str}' operation"), token.pos);
                 },
-                other => unreachable!("Error in create_expr(): {other:?}"),
+                other => unreachable!("Error in compile_expr(): {other:?}"),
             }
         },
         SyntaxErr::MissingFuncArg(token) => {
@@ -1076,14 +1076,14 @@ fn syntax_err(input: &str, err: SyntaxErr) {
                 TokenType::Operation(Operation::RightParen) => ")".to_string(),
                 TokenType::Number(num)  => num.to_string(),
                 TokenType::Ident(ident) => ident,
-                _ => unreachable!("Error in create_expr()"),
+                _ => unreachable!("Error in compile_expr()"),
             };
             let b_str = match b.ttype {
                 TokenType::Operation(Operation::LeftParen)  => "(".to_string(),
                 TokenType::Operation(Operation::RightParen) => ")".to_string(),
                 TokenType::Number(num)  => num.to_string(),
                 TokenType::Ident(ident) => ident,
-                _ => unreachable!("Error in create_expr()"),
+                _ => unreachable!("Error in compile_expr()"),
             };
             print_err(&input, &format!("Missing operation between '{a_str}' and '{b_str}'"), b.pos-1);
         },
@@ -1107,7 +1107,7 @@ fn syntax_err(input: &str, err: SyntaxErr) {
                 TokenType::Ident(arg) => {
                     print_err(&input, &format!("Argument '{arg}' already exists"), token.pos);
                 },
-                _ => unreachable!("Error in create_function()"),
+                _ => unreachable!("Error in compile_function()"),
             }
         },
         SyntaxErr::MissingComma(token) => {
@@ -1160,7 +1160,7 @@ fn syntax_err(input: &str, err: SyntaxErr) {
                 TokenType::Ident(ident) => {
                     print_err(&input, &format!("Iterative variable identifier '{ident}' overlaps with argument of outer function"), token.pos);
                 },
-                _ => unreachable!("Error in create_expr()"),
+                _ => unreachable!("Error in compile_expr()"),
             }
         },
     }
@@ -1306,7 +1306,7 @@ fn load_file(path: &str) -> Option<Vec<Func>> {
                 return None;
             },
         };
-        let func = match create_function(&tokens) {
+        let func = match compile_function(&tokens) {
             Ok(func) => func,
             Err(err) => {
                 print!("({line_num}) ", line_num = i+1);
@@ -1687,7 +1687,7 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             };
             let is_def = tokens.len() > 0 && tokens[0].ttype == TokenType::Keyword(Keyword::Def);
             let instr = if is_def {
-                match create_function(&tokens) {
+                match compile_function(&tokens) {
                     Ok(func) => func.expr,
                     Err(err) => {
                         syntax_err(&expr, err);
@@ -1696,7 +1696,7 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                 }
             } else {
                 let mut func_id = 0;
-                match create_expr(&tokens, &[], &mut func_id) {
+                match compile_expr(&tokens, &[], &mut func_id) {
                     Ok(tokens) => tokens,
                     Err(err) => {
                         syntax_err(&expr, err);
@@ -1715,10 +1715,10 @@ fn exec_command(state: &mut State, input: &str) -> bool {
     }
 }
 
-fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Instruction>> {
+fn compile(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Instruction>> {
     let is_def = tokens.len() > 0 && tokens[0].ttype == TokenType::Keyword(Keyword::Def);
     if is_def {
-        match create_function(&tokens) {
+        match compile_function(&tokens) {
             Ok(func) => {
                 let ident = func.ident.clone();
                 if BUILTIN_FUNCS.contains(&ident.as_str()) {
@@ -1755,7 +1755,7 @@ fn create(state: &mut State, tokens: &Vec<Token>, input: &str) -> Option<Vec<Ins
         }
     } else {
         let mut func_id = 0;
-        match create_expr(&tokens, &vec![], &mut func_id) {
+        match compile_expr(&tokens, &vec![], &mut func_id) {
             Ok(expr) => return Some(expr),
             Err(err) => {
                 syntax_err(&input, err);
@@ -2064,6 +2064,7 @@ impl Validator for CmdHelper { }
 impl Highlighter for CmdHelper { }
 impl Helper for CmdHelper { }
 
+// TODO: Update usage() and README.md
 fn main() -> rustyline::Result<()> {
     let config = Config::builder()
         .history_ignore_space(true)
@@ -2103,7 +2104,7 @@ fn main() -> rustyline::Result<()> {
                 continue;
             },
         };
-        match create(&mut state, &tokens, &input) {
+        match compile(&mut state, &tokens, &input) {
             Some(instructions) => {
                 let main = Func {
                     ident: "main".to_string(),
