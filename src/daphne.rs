@@ -281,6 +281,7 @@ fn compile_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
         Ok(instructions) => instructions,
         Err(err) => return Err(err),
     };
+    let expr = comptime_evaluate(&expr);
     Ok(Func {
         ident: ident.clone(),
         args: (*args).to_vec(),
@@ -645,6 +646,7 @@ fn compile_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Resul
                     Err(err) => return Err(err),
                     Ok(instructions) => instructions,
                 };
+                expr = comptime_evaluate(&expr);
                 match op {
                     TokenType::Keyword(Keyword::Sum) => instructions.push(Instruction::Sum(it.to_string(), *func_id)), 
                     TokenType::Keyword(Keyword::Prod) => instructions.push(Instruction::Prod(it.to_string(), *func_id)), 
@@ -1023,6 +1025,99 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
     }
     assert!(numbers.len() == 1);
     Ok(numbers.pop().unwrap())
+}
+
+fn comptime_evaluate(expr: &Vec<Instruction>) -> Vec<Instruction> {
+    let mut numbers = vec![];
+    let mut operations = vec![];
+    let mut res = vec![];
+    let mut iters: Vec<(String, f64)> = vec![];
+    let mut i = 0;
+    while i < expr.len() {
+        let instr = &expr[i];
+        match instr {
+            Instruction::PushNumber(num) => numbers.push(*num),
+            Instruction::PushOp(Operation::LeftParen) => operations.push(Operation::LeftParen),
+            Instruction::PushOp(Operation::RightParen) => {
+                while let Some(last) = operations.pop() {
+                    if last == Operation::LeftParen {
+                        break;
+                    }
+                    apply_op(&mut numbers, last);
+                }
+            },
+            Instruction::PushOp(op) => {
+                if let None = operations.last() {
+                    operations.push(op.clone());
+                } else {
+                    while let Some(last) = operations.pop() {
+                        if last == Operation::LeftParen || op_priority(&last) < op_priority(&op) {
+                            operations.push(last);
+                            break
+                        }
+                        apply_op(&mut numbers, last);
+                    }
+                    operations.push(op.clone());
+                }
+            },
+            Instruction::PushArg(_arg) => {
+                return expr.to_vec();
+            },
+            Instruction::ParamBegin(_) => {},
+            Instruction::FunctionCall(_ident, _params_count, _id) => {
+                return expr.to_vec();
+            },
+            Instruction::Sum(it_ident, _id) => {
+                assert!(numbers.len() >= 3);
+                let begin = numbers[numbers.len()-3];
+                iters.push((it_ident.clone(), begin));
+                numbers.push(0.0);
+            },
+            Instruction::Prod(it_ident, _id) => {
+                assert!(numbers.len() >= 3);
+                let begin = numbers[numbers.len()-3];
+                iters.push((it_ident.clone(), begin));
+                numbers.push(1.0);
+            },
+            Instruction::Jump(instr_type, pos) => {
+                let it = numbers.pop().unwrap();
+                let count = numbers.len();
+                let step = numbers[count-2];
+                let end = numbers[count-3];
+                let begin = numbers[count-4];
+                match instr_type {
+                    AccType::Sum => numbers[count-1] += it,
+                    AccType::Prod => numbers[count-1] *= it,
+                }
+                let count = iters.len();
+                if iters[count-1].1 + step < end {
+                    iters[count-1].1 += step;
+                    i = i - *pos;
+                    continue;
+                }
+                let mut res = numbers.pop().unwrap();
+                if begin >= end {
+                    match instr_type {
+                        AccType::Sum => res = 0.0,
+                        AccType::Prod => res = 1.0,
+                    }
+                }
+                numbers.pop().unwrap();
+                numbers.pop().unwrap();
+                numbers.pop().unwrap();
+                numbers.push(res);
+                iters.pop().unwrap();
+            },
+        }
+        i += 1;
+    }
+    while let Some(last) = operations.pop() {
+        apply_op(&mut numbers, last);
+    }
+    assert!(numbers.len() == 1);
+    let num = numbers.pop().unwrap();
+    res.push(Instruction::PushNumber(num));
+    return res;
 }
 
 const DEFAULT_TERM_WIDTH: u16 = 50;
