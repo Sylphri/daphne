@@ -659,7 +659,7 @@ fn compile_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Resul
                     TokenType::Keyword(Keyword::Prod) => instructions.push(Instruction::Jump(AccType::Prod, instructions.len() - begin)),
                     _ => unreachable!(),
                 }
-                i = pos+1;
+                i = pos;
             },
             TokenType::Symbol(Symbol::Assign) => {
                 return Err(SyntaxErr::AssignInsideOfExpr(tokens[i].clone()));
