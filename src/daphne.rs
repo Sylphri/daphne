@@ -277,15 +277,16 @@ fn compile_function(tokens: &[Token]) -> Result<Func, SyntaxErr> {
         return Err(SyntaxErr::MissingFuncBody(tokens[pos-1].clone()));
     }
     let mut func_id = 0;
-    let expr = match compile_expr(&tokens[pos..], &args, &mut func_id) {
+    let source = match compile_expr(&tokens[pos..], &args, &mut func_id) {
         Ok(instructions) => instructions,
         Err(err) => return Err(err),
     };
-    let expr = comptime_evaluate(&expr);
+    let optimized = comptime_evaluate(&source);
     Ok(Func {
         ident: ident.clone(),
         args: (*args).to_vec(),
-        expr: expr,
+        source: source,
+        optimized: optimized,
     })
 }
 
@@ -661,7 +662,7 @@ fn compile_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Resul
                     TokenType::Keyword(Keyword::Prod) => instructions.push(Instruction::Jump(AccType::Prod, instructions.len() - begin)),
                     _ => unreachable!(),
                 }
-                i = pos+1;
+                i = pos;
             },
             TokenType::Symbol(Symbol::Assign) => {
                 return Err(SyntaxErr::AssignInsideOfExpr(tokens[i].clone()));
@@ -691,7 +692,8 @@ fn compile_expr(tokens: &[Token], args: &[String], func_id: &mut usize) -> Resul
 struct Func {
     ident: String,
     args: Vec<String>,
-    expr: Vec<Instruction>,
+    source: Vec<Instruction>,
+    optimized: Vec<Instruction>,
 }
 
 fn op_priority(op: &Operation) -> u8 {
@@ -890,8 +892,8 @@ fn evaluate(functions: &HashMap<String, Func>, func: &Func, params: &Vec<f64>) -
     let mut operations = vec![];
     let mut iters: Vec<(String, f64)> = vec![];
     let mut i = 0;
-    'outer: while i < func.expr.len() {
-        let instr = &func.expr[i];
+    'outer: while i < func.optimized.len() {
+        let instr = &func.optimized[i];
         match instr {
             Instruction::PushNumber(num) => numbers.push(*num),
             Instruction::PushOp(Operation::LeftParen) => operations.push(Operation::LeftParen),
@@ -1031,22 +1033,58 @@ fn comptime_evaluate(expr: &Vec<Instruction>) -> Vec<Instruction> {
     let mut numbers = vec![];
     let mut operations = vec![];
     let mut res = vec![];
-    let mut iters: Vec<(String, f64)> = vec![];
+    let mut expr = expr.clone();
+    let mut after_arg = false;
+    let mut parens = 0;
     let mut i = 0;
-    while i < expr.len() {
+    'outer: while i < expr.len() {
         let instr = &expr[i];
         match instr {
             Instruction::PushNumber(num) => numbers.push(*num),
-            Instruction::PushOp(Operation::LeftParen) => operations.push(Operation::LeftParen),
+            Instruction::PushOp(Operation::LeftParen) => {
+                operations.push(Operation::LeftParen);
+                if after_arg {
+                    parens += 1;
+                }
+            },
             Instruction::PushOp(Operation::RightParen) => {
+                let mut has_left = false;
                 while let Some(last) = operations.pop() {
                     if last == Operation::LeftParen {
+                        has_left = true;
                         break;
                     }
                     apply_op(&mut numbers, last);
                 }
+                if !has_left {
+                    res.push(Instruction::PushNumber(numbers[0]));
+                    res.push(Instruction::PushOp(Operation::RightParen));
+                    numbers.clear();
+                }
+                if after_arg {
+                    parens -= 1;
+                }
             },
             Instruction::PushOp(op) => {
+                if after_arg {
+                    match op {
+                        op @ Operation::Add | op @ Operation::Sub => {
+                            if parens == 0 {
+                                while let Some(last) = operations.pop() {
+                                    apply_op(&mut numbers, last);
+                                }
+                                assert!(numbers.len() == 1);
+                                res.push(Instruction::PushNumber(numbers[0]));
+                                res.push(Instruction::PushOp(op.clone()));
+                                numbers.clear();
+                                after_arg = false;
+                                i += 1;
+                                continue;
+                            }
+                        },
+                        _ => {},
+                    }
+                }
                 if let None = operations.last() {
                     operations.push(op.clone());
                 } else {
@@ -1060,53 +1098,266 @@ fn comptime_evaluate(expr: &Vec<Instruction>) -> Vec<Instruction> {
                     operations.push(op.clone());
                 }
             },
-            Instruction::PushArg(_arg) => {
-                return expr.to_vec();
-            },
-            Instruction::ParamBegin(_) => {},
-            Instruction::FunctionCall(_ident, _params_count, _id) => {
-                return expr.to_vec();
-            },
-            Instruction::Sum(it_ident, _id) => {
-                assert!(numbers.len() >= 3);
-                let begin = numbers[numbers.len()-3];
-                iters.push((it_ident.clone(), begin));
-                numbers.push(0.0);
-            },
-            Instruction::Prod(it_ident, _id) => {
-                assert!(numbers.len() >= 3);
-                let begin = numbers[numbers.len()-3];
-                iters.push((it_ident.clone(), begin));
-                numbers.push(1.0);
-            },
-            Instruction::Jump(instr_type, pos) => {
-                let it = numbers.pop().unwrap();
-                let count = numbers.len();
-                let step = numbers[count-2];
-                let end = numbers[count-3];
-                let begin = numbers[count-4];
-                match instr_type {
-                    AccType::Sum => numbers[count-1] += it,
-                    AccType::Prod => numbers[count-1] *= it,
-                }
-                let count = iters.len();
-                if iters[count-1].1 + step < end {
-                    iters[count-1].1 += step;
-                    i = i - *pos;
-                    continue;
-                }
-                let mut res = numbers.pop().unwrap();
-                if begin >= end {
-                    match instr_type {
-                        AccType::Sum => res = 0.0,
-                        AccType::Prod => res = 1.0,
+            instr @ Instruction::PushArg(_arg) => {
+                if operations.len() == 0 {
+                    assert!(numbers.len() <= 1);
+                    if numbers.len() == 1 {
+                        res.push(Instruction::PushNumber(numbers[0]));
+                    }
+                } else {
+                    let mut k = 0;
+                    for j in 0..operations.len() {
+                        let op = operations[j].clone();
+                        match op {
+                            op @ Operation::LeftParen  |
+                            op @ Operation::UnaryMinus |
+                            op @ Operation::UnaryPlus => {
+                                res.push(Instruction::PushOp(op));
+                            },
+                            op => {
+                                res.push(Instruction::PushNumber(numbers[k]));
+                                res.push(Instruction::PushOp(op));
+                                k += 1;
+                            },
+                        }
                     }
                 }
-                numbers.pop().unwrap();
-                numbers.pop().unwrap();
-                numbers.pop().unwrap();
-                numbers.push(res);
-                iters.pop().unwrap();
+                operations.clear();
+                numbers.clear();
+                res.push(instr.clone());
+                while i < expr.len()-1 {
+                    i += 1;
+                    match &expr[i] {
+                        instr @ Instruction::PushOp(Operation::Add) => {
+                            res.push(instr.clone());
+                            break;
+                        },
+                        Instruction::PushOp(Operation::Sub) => {
+                            res.push(Instruction::PushOp(Operation::Add));
+                            expr.insert(i+1, Instruction::PushOp(Operation::UnaryMinus));
+                            break;
+                        },
+                        Instruction::PushOp(Operation::Mul) => {
+                            numbers.push(1.0);
+                            res.push(Instruction::PushOp(Operation::Mul));
+                            after_arg = true;
+                            continue 'outer;
+                        },
+                        Instruction::PushOp(Operation::Div) => {
+                            numbers.push(1.0);
+                            res.push(Instruction::PushOp(Operation::Mul));
+                            after_arg = true;
+                            continue 'outer;
+                        },
+                        instr @ Instruction::PushOp(Operation::RightParen) => {
+                            res.push(instr.clone());
+                        },
+                        Instruction::PushOp(Operation::Pow) => todo!(),
+                        instr @ Instruction::Jump(_, _) => {
+                            res.push(instr.clone());
+                        },
+                        instr @ Instruction::ParamBegin(_) => {
+                            res.push(instr.clone());
+                        },
+                        instr @ Instruction::FunctionCall(_, _, _) => {
+                            res.push(instr.clone());
+                        },
+                        instr => unreachable!("{instr:?}"),
+                    }
+                }
+            },
+            instr @ Instruction::ParamBegin(_) => {
+                if operations.len() == 0 {
+                    assert!(numbers.len() <= 1);
+                    if numbers.len() == 1 {
+                        res.push(Instruction::PushNumber(numbers[0]));
+                    }
+                } else {
+                    let mut k = 0;
+                    for j in 0..operations.len() {
+                        let op = operations[j].clone();
+                        match op {
+                            op @ Operation::LeftParen  |
+                            op @ Operation::UnaryMinus |
+                            op @ Operation::UnaryPlus => {
+                                res.push(Instruction::PushOp(op));
+                            },
+                            op => {
+                                res.push(Instruction::PushNumber(numbers[k]));
+                                res.push(Instruction::PushOp(op));
+                                k += 1;
+                            },
+                        }
+                    }
+                }
+                operations.clear();
+                numbers.clear();
+                res.push(instr.clone());
+            },
+            instr @ Instruction::FunctionCall(_ident, _params_count, _id) => {
+                if operations.len() == 0 {
+                    assert!(numbers.len() <= 1);
+                    if numbers.len() == 1 {
+                        res.push(Instruction::PushNumber(numbers[0]));
+                    }
+                } else {
+                    let mut k = 0;
+                    for j in 0..operations.len() {
+                        let op = operations[j].clone();
+                        match op {
+                            op @ Operation::LeftParen  |
+                            op @ Operation::UnaryMinus |
+                            op @ Operation::UnaryPlus => {
+                                res.push(Instruction::PushOp(op));
+                            },
+                            op => {
+                                res.push(Instruction::PushNumber(numbers[k]));
+                                res.push(Instruction::PushOp(op));
+                                k += 1;
+                            },
+                        }
+                    }
+                }
+                operations.clear();
+                numbers.clear();
+                res.push(instr.clone());
+                while i < expr.len()-1 {
+                    i += 1;
+                    match &expr[i] {
+                        instr @ Instruction::PushOp(Operation::Add) => {
+                            res.push(instr.clone());
+                            break;
+                        },
+                        Instruction::PushOp(Operation::Sub) => {
+                            res.push(Instruction::PushOp(Operation::Add));
+                            expr.insert(i+1, Instruction::PushOp(Operation::UnaryMinus));
+                            break;
+                        },
+                        Instruction::PushOp(Operation::Mul) => {
+                            numbers.push(1.0);
+                            res.push(Instruction::PushOp(Operation::Mul));
+                            after_arg = true;
+                            continue 'outer;
+                        },
+                        Instruction::PushOp(Operation::Div) => {
+                            numbers.push(1.0);
+                            res.push(Instruction::PushOp(Operation::Mul));
+                            after_arg = true;
+                            continue 'outer;
+                        },
+                        instr @ Instruction::PushOp(Operation::RightParen) => {
+                            res.push(instr.clone());
+                        },
+                        Instruction::PushOp(Operation::Pow) => todo!(),
+                        instr @ Instruction::Jump(_, _) => {
+                            res.push(instr.clone());
+                        },
+                        instr @ Instruction::ParamBegin(_) => {
+                            res.push(instr.clone());
+                        },
+                        instr @ Instruction::FunctionCall(_, _, _) => {
+                            res.push(instr.clone());
+                        },
+                        instr => unreachable!("{instr:?}"),
+                    }
+                }
+            },
+            instr @ Instruction::Sum(_it_ident, _id)  |
+            instr @ Instruction::Prod(_it_ident, _id) => {
+                if operations.len() == 0 {
+                    assert!(numbers.len() <= 1);
+                    if numbers.len() == 1 {
+                        res.push(Instruction::PushNumber(numbers[0]));
+                    }
+                } else {
+                    let mut k = 0;
+                    for j in 0..operations.len() {
+                        let op = operations[j].clone();
+                        match op {
+                            op @ Operation::LeftParen  |
+                            op @ Operation::UnaryMinus |
+                            op @ Operation::UnaryPlus => {
+                                res.push(Instruction::PushOp(op));
+                            },
+                            op => {
+                                res.push(Instruction::PushNumber(numbers[k]));
+                                res.push(Instruction::PushOp(op));
+                                k += 1;
+                            },
+                        }
+                    }
+                }
+                operations.clear();
+                numbers.clear();
+                res.push(instr.clone());
+            },
+            instr @ Instruction::Jump(_instr_type, _pos) => {
+                if operations.len() == 0 {
+                    assert!(numbers.len() <= 1);
+                    if numbers.len() == 1 {
+                        res.push(Instruction::PushNumber(numbers[0]));
+                    }
+                } else {
+                    let mut k = 0;
+                    for j in 0..operations.len() {
+                        let op = operations[j].clone();
+                        match op {
+                            op @ Operation::LeftParen  |
+                            op @ Operation::UnaryMinus |
+                            op @ Operation::UnaryPlus => {
+                                res.push(Instruction::PushOp(op));
+                            },
+                            op => {
+                                res.push(Instruction::PushNumber(numbers[k]));
+                                res.push(Instruction::PushOp(op));
+                                k += 1;
+                            },
+                        }
+                    }
+                }
+                operations.clear();
+                numbers.clear();
+                res.push(instr.clone());
+                while i < expr.len()-1 {
+                    i += 1;
+                    match &expr[i] {
+                        instr @ Instruction::PushOp(Operation::Add) => {
+                            res.push(instr.clone());
+                            break;
+                        },
+                        Instruction::PushOp(Operation::Sub) => {
+                            res.push(Instruction::PushOp(Operation::Add));
+                            expr.insert(i+1, Instruction::PushOp(Operation::UnaryMinus));
+                            break;
+                        },
+                        Instruction::PushOp(Operation::Mul) => {
+                            numbers.push(1.0);
+                            res.push(Instruction::PushOp(Operation::Mul));
+                            after_arg = true;
+                            continue 'outer;
+                        },
+                        Instruction::PushOp(Operation::Div) => {
+                            numbers.push(1.0);
+                            res.push(Instruction::PushOp(Operation::Mul));
+                            after_arg = true;
+                            continue 'outer;
+                        },
+                        instr @ Instruction::PushOp(Operation::RightParen) => {
+                            res.push(instr.clone());
+                        },
+                        Instruction::PushOp(Operation::Pow) => todo!(),
+                        instr @ Instruction::Jump(_, _) => {
+                            res.push(instr.clone());
+                        },
+                        instr @ Instruction::ParamBegin(_) => {
+                            res.push(instr.clone());
+                        },
+                        instr @ Instruction::FunctionCall(_, _, _) => {
+                            res.push(instr.clone());
+                        },
+                        instr => unreachable!("{instr:?}"),
+                    }
+                }
             },
         }
         i += 1;
@@ -1114,9 +1365,11 @@ fn comptime_evaluate(expr: &Vec<Instruction>) -> Vec<Instruction> {
     while let Some(last) = operations.pop() {
         apply_op(&mut numbers, last);
     }
-    assert!(numbers.len() == 1);
-    let num = numbers.pop().unwrap();
-    res.push(Instruction::PushNumber(num));
+    assert!(numbers.len() <= 1);
+    if numbers.len() == 1 {
+        let num = numbers.pop().unwrap();
+        res.push(Instruction::PushNumber(num));
+    }
     return res;
 }
 
@@ -1349,7 +1602,13 @@ fn print_builtins() {
     println!("  min(a, b) - Returns the minimum of the two numbers.");
 }
 
-fn print_functions(functions: &HashMap::<String, Func>, full: bool) {
+enum ListFormat {
+    Compact,
+    Full,
+    Optimized,
+}
+
+fn print_functions(functions: &HashMap::<String, Func>, format: ListFormat) {
     if functions.len() == 0 {
         println!("  [empty]");
     }
@@ -1368,9 +1627,16 @@ fn print_functions(functions: &HashMap::<String, Func>, full: bool) {
         }
         write!(&mut buffer, ")").unwrap();
         print!("{}", String::from_utf8(buffer).unwrap());
-        if full {
-            print!(" = ");
-            write_expr(&mut stdout(), &func.expr).expect("Can't write in stdout");
+        match format {
+            ListFormat::Full => {
+                print!(" = ");
+                write_expr(&mut stdout(), &func.source).expect("Can't write in stdout");
+            },
+            ListFormat::Optimized => {
+                print!(" = ");
+                write_expr(&mut stdout(), &func.optimized).expect("Can't write in stdout");
+            },
+            ListFormat::Compact => {},
         }
         println!();
     }
@@ -1427,7 +1693,7 @@ fn save_file(functions: &HashMap<String, Func>, path: &str) -> std::io::Result<(
             }
         }
         file.write_all(b") = ")?;
-        write_expr(&mut file, &func.expr)?;
+        write_expr(&mut file, &func.source)?;
         file.write_all(b"\n")?;
     }
     Ok(())
@@ -1576,8 +1842,9 @@ fn exec_command(state: &mut State, input: &str) -> bool {
         // TODO: Add search to list and builtin commands
         "list" => {
             match args.next() {
-                Some("-l") => print_functions(&state.functions, true),
-                None => print_functions(&state.functions, false),
+                Some("-l") => print_functions(&state.functions, ListFormat::Full),
+                Some("-o") => print_functions(&state.functions, ListFormat::Optimized),
+                None => print_functions(&state.functions, ListFormat::Compact),
                 Some(arg) => println!("[Error]: Unknown argument '{arg}' for command 'list'"),
             }
             return true;
@@ -1692,7 +1959,12 @@ fn exec_command(state: &mut State, input: &str) -> bool {
                 let builtin = Func {
                     ident: ident.to_string(),
                     args: vec!["x".to_string()],
-                    expr: vec![
+                    source: vec![
+                        Instruction::ParamBegin(0),
+                        Instruction::PushArg("x".to_string()),
+                        Instruction::FunctionCall(ident.to_string(), 1, 0),
+                    ],
+                    optimized: vec![
                         Instruction::ParamBegin(0),
                         Instruction::PushArg("x".to_string()),
                         Instruction::FunctionCall(ident.to_string(), 1, 0),
@@ -1783,7 +2055,7 @@ fn exec_command(state: &mut State, input: &str) -> bool {
             let is_def = tokens.len() > 0 && tokens[0].ttype == TokenType::Keyword(Keyword::Def);
             let instr = if is_def {
                 match compile_function(&tokens) {
-                    Ok(func) => func.expr,
+                    Ok(func) => func.optimized,
                     Err(err) => {
                         syntax_err(&expr, err);
                         return true;
@@ -2204,7 +2476,8 @@ fn main() -> rustyline::Result<()> {
                 let main = Func {
                     ident: "main".to_string(),
                     args: vec![],
-                    expr: instructions,
+                    source: vec![],
+                    optimized: instructions,
                 };
                 match evaluate(&state.functions, &main, &vec![]) {
                     Ok(res) => println!(" = {res}"),
